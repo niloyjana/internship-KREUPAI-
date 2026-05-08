@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: integration-hub
+  namespace: adwp
+  labels:
+    app: integration-hub
+    app.kubernetes.io/part-of: adwp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: integration-hub
+  template:
+    metadata:
+      labels:
+        app: integration-hub
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: integration-hub
+          image: ${ECR_REGISTRY}/adwp/integration-hub:latest
+          ports:
+            - containerPort: 3015
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: adwp-config
+            - secretRef:
+                name: adwp-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3015
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3015
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: integration-hub
+  namespace: adwp
+  labels:
+    app: integration-hub
+spec:
+  type: ClusterIP
+  selector:
+    app: integration-hub
+  ports:
+    - port: 3015
+      targetPort: 3015
+      protocol: TCP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: integration-hub-hpa
+  namespace: adwp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: integration-hub
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

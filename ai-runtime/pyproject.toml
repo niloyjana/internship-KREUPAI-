@@ -1,0 +1,9 @@
+[project]
+name = "adwp-ai-runtime"
+version = "1.0.0"
+description = "AI Agent Runtime Engine for ADWP"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,1411 @@
+// database/prisma/schema.prisma
+// AI Digital Workforce Platform — Master Schema v1.0.0
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector"), pg_trgm]
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CHURNED
+}
+
+enum TenantPlan {
+  STARTER
+  GROWTH
+  ENTERPRISE
+  CUSTOM
+}
+
+enum UserRole {
+  PLATFORM_ADMIN
+  TENANT_ADMIN
+  DEPARTMENT_MANAGER
+  END_USER
+  AUDITOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum AgentDepartment {
+  CUSTOMER_OPERATIONS
+  SALES_MARKETING
+  HR_PEOPLE_OPS
+  FINANCE_PROCUREMENT
+  DELIVERY_OPS
+  GOVERNANCE_RISK_CONTROL
+}
+
+enum AgentStatus {
+  ACTIVE
+  IDLE
+  WORKING
+  ESCALATING
+  PAUSED
+  INACTIVE
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum WorkflowStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum StepType {
+  AI_TASK
+  HUMAN_TASK
+  SYSTEM_CALL
+  DECISION
+  PARALLEL
+  WAIT
+}
+
+enum StepStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+  AWAITING_HUMAN
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  REJECTED
+  EXPIRED
+}
+
+enum EscalationSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum EscalationStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  ESCALATED_FURTHER
+}
+
+enum IntegrationProvider {
+  SALESFORCE
+  HUBSPOT
+  ZOHO_CRM
+  DYNAMICS365
+  SAP
+  ORACLE
+  ODOO
+  NETSUITE
+  QUICKBOOKS
+  XERO
+  WORKDAY
+  BAMBOOHR
+  AURAOS
+  MANITHPRO
+  GREENHOUSE
+  LEVER
+  SERVICENOW
+  JIRA
+  FRESHDESK
+  GMAIL
+  OUTLOOK
+  GOOGLE_CALENDAR
+  OUTLOOK_CALENDAR
+  SLACK
+  GENERIC_REST
+  WEBHOOK
+  SFTP
+  CUSTOM
+}
+
+enum IntegrationStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+  PENDING_AUTH
+  EXPIRED
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  PUSH
+  WEBHOOK
+  SLACK
+}
+
+enum BillingEventType {
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_RENEWED
+  SUBSCRIPTION_CANCELLED
+  AGENT_ADDED
+  AGENT_REMOVED
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  INVOICE_GENERATED
+  CREDIT_APPLIED
+  REFUND_ISSUED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+  UNCOLLECTIBLE
+}
+
+enum AuditActorType {
+  AI_AGENT
+  HUMAN_USER
+  SYSTEM
+  INTEGRATION
+}
+
+enum PayrollRunStatus {
+  PENDING
+  VALIDATING
+  EXCEPTIONS_FOUND
+  CLEAN
+  APPROVED
+  PROCESSED
+}
+
+// ============================================================
+// SECTION 1: TENANT & IDENTITY
+// ============================================================
+
+model Tenant {
+  id               String       @id @default(cuid())
+  name             String
+  slug             String       @unique
+  plan             TenantPlan   @default(STARTER)
+  status           TenantStatus @default(TRIAL)
+  domain           String?
+  logoUrl          String?
+  primaryColor     String?
+  timezone         String       @default("UTC")
+  locale           String       @default("en")
+  countryCode      String       @default("BH")
+  config           Json?
+  stripeCustomerId String?      @unique
+  trialEndsAt      DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  deletedAt        DateTime?
+
+  users            TenantUser[]
+  agentSubs        AgentSubscription[]
+  agentConfigs     AgentConfig[]
+  workflowDefs     WorkflowDefinition[]
+  workflowExecs    WorkflowExecution[]
+  integrations     IntegrationConnection[]
+  integrationWebhooks IntegrationWebhook[]
+  auditLogs        AuditLog[]
+  agentActions     AgentAction[]
+  notifications    NotificationPreference[]
+  notificationTemplates NotificationTemplate[]
+  analyticsReports AnalyticsReport[]
+  billingEvents    BillingEvent[]
+  invoices         Invoice[]
+  usageMetrics     UsageMetric[]
+  escalations      EscalationTicket[]
+  humanTasks       HumanTask[]
+  configTemplates  ConfigTemplate[]
+
+  @@index([slug])
+  @@index([status])
+  @@map("tenants")
+}
+
+model TenantUser {
+  id         String     @id @default(cuid())
+  tenantId   String
+  userId     String
+  role       UserRole   @default(END_USER)
+  status     UserStatus @default(ACTIVE)
+  department String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
+
+  @@unique([tenantId, userId])
+  @@index([tenantId])
+  @@map("tenant_users")
+}
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String
+  passwordHash  String?
+  avatarUrl     String?
+  phone         String?
+  mfaEnabled         Boolean      @default(false)
+  mfaSecret          String?
+  resetToken         String?
+  resetTokenExpiresAt DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  deletedAt          DateTime?
+
+  tenants       TenantUser[]
+  sessions      UserSession[]
+  apiKeys       ApiKey[]
+  humanTasks    HumanTask[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String
+  tenantId     String?
+  token        String   @unique
+  refreshToken String   @unique
+  ipAddress    String?
+  userAgent    String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@index([token])
+  @@index([userId])
+  @@map("user_sessions")
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  userId      String
+  tenantId    String
+  name        String
+  keyHash     String   @unique
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  revokedAt   DateTime?
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([keyHash])
+  @@index([tenantId])
+  @@map("api_keys")
+}
+
+// ============================================================
+// SECTION 2: AGENT REGISTRY & SUBSCRIPTIONS
+// ============================================================
+
+model AgentDefinition {
+  id                    String          @id @default(cuid())
+  agentId               String          @unique
+  name                  String
+  department            AgentDepartment
+  description           String
+  version               String
+  monthlyPricingUsd     Decimal
+  pricingTier           String
+  capabilities          String[]
+  requiredIntegrations  String[]
+  optionalIntegrations  String[]
+  defaultPolicyJson     Json
+  escalationMapJson     Json
+  isActive              Boolean         @default(true)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  subscriptions         AgentSubscription[]
+  configs               AgentConfig[]
+
+  @@index([department])
+  @@map("agent_definitions")
+}
+
+model AgentSubscription {
+  id                String             @id @default(cuid())
+  tenantId          String
+  agentDefinitionId String
+  status            SubscriptionStatus @default(TRIAL)
+  stripeSubItemId   String?
+  startedAt         DateTime           @default(now())
+  endsAt            DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
+  agentDefinition   AgentDefinition    @relation(fields: [agentDefinitionId], references: [id])
+
+  @@unique([tenantId, agentDefinitionId])
+  @@index([tenantId, status])
+  @@map("agent_subscriptions")
+}
+
+model AgentConfig {
+  id                 String          @id @default(cuid())
+  tenantId           String
+  agentDefinitionId  String
+  displayName        String?
+  policyJson         Json
+  integrationIds     String[]
+  isEnabled          Boolean         @default(true)
+  configVersion      Int             @default(1)
+  lastConfiguredAt   DateTime?
+  configuredByUserId String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  tenant             Tenant          @relation(fields: [tenantId], references: [id])
+  agentDefinition    AgentDefinition @relation(fields: [agentDefinitionId], references: [id])
+  agentInstances     AgentInstance[]
+  history            AgentConfigHistory[]
+
+  @@unique([tenantId, agentDefinitionId])
+  @@index([tenantId])
+  @@map("agent_configs")
+}
+
+model AgentConfigHistory {
+  id              String      @id @default(cuid())
+  agentConfigId   String
+  agentConfig     AgentConfig @relation(fields: [agentConfigId], references: [id])
+  tenantId        String
+  version         Int
+  displayName     String?
+  policyJson      Json        @default("{}")
+  changedBy       String
+  changeReason    String?
+  snapshot        Json        @default("{}")
+  createdAt       DateTime    @default(now())
+
+  @@index([agentConfigId, version])
+  @@map("agent_config_history")
+}
+
+model AgentInstance {
+  id            String      @id @default(cuid())
+  tenantId      String
+  agentConfigId String
+  agentId       String
+  status        AgentStatus @default(IDLE)
+  currentTaskId String?
+  lastActiveAt  DateTime?
+  podId         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  agentConfig   AgentConfig @relation(fields: [agentConfigId], references: [id])
+
+  @@index([tenantId, agentId])
+  @@index([tenantId, status])
+  @@map("agent_instances")
+}
+
+model ConfigTemplate {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  name        String
+  description String?
+  category    String?
+  version     String   @default("1.0.0")
+  configJson  Json
+  isDefault   Boolean  @default(false)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([name])
+  @@map("config_templates")
+}
+
+// ============================================================
+// SECTION 3: WORKFLOW ENGINE
+// ============================================================
+
+model WorkflowDefinition {
+  id              String   @id @default(cuid())
+  tenantId        String
+  agentId         String
+  name            String
+  description     String?
+  triggerType     String
+  triggerConfig   Json
+  stepsJson       Json
+  isActive        Boolean  @default(true)
+  version         Int      @default(1)
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant          Tenant              @relation(fields: [tenantId], references: [id])
+  executions      WorkflowExecution[]
+
+  @@index([tenantId, agentId])
+  @@map("workflow_definitions")
+}
+
+model WorkflowExecution {
+  id               String         @id @default(cuid())
+  tenantId         String
+  definitionId     String
+  agentId          String
+  status           WorkflowStatus @default(PENDING)
+  triggerSource    String?
+  triggerPayload   Json?
+  contextJson      Json?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  failedAt         DateTime?
+  failureReason    String?
+  durationMs       Int?
+  tokenUsed        Int?
+  llmCostUsd       Decimal?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  tenant           Tenant             @relation(fields: [tenantId], references: [id])
+  definition       WorkflowDefinition @relation(fields: [definitionId], references: [id])
+  steps            WorkflowStep[]
+  escalations      EscalationTicket[]
+
+  @@index([tenantId, agentId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("workflow_executions")
+}
+
+model WorkflowStep {
+  id            String     @id @default(cuid())
+  executionId   String
+  stepKey       String
+  stepType      StepType
+  status        StepStatus @default(PENDING)
+  sequence      Int
+  inputJson     Json?
+  outputJson    Json?
+  toolCalled    String?
+  llmPromptHash String?
+  llmResponse   String?
+  durationMs    Int?
+  retryCount    Int        @default(0)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  failedAt      DateTime?
+  errorMessage  String?
+  createdAt     DateTime   @default(now())
+
+  execution     WorkflowExecution @relation(fields: [executionId], references: [id])
+  humanTask     HumanTask?
+
+  @@index([executionId])
+  @@index([executionId, status])
+  @@map("workflow_steps")
+}
+
+model HumanTask {
+  id             String     @id @default(cuid())
+  tenantId       String
+  executionId    String
+  stepId         String     @unique
+  title          String
+  description    String?
+  contextJson    Json?
+  assignedToId   String?
+  assignedTeam   String?
+  status         TaskStatus @default(PENDING)
+  priority       String     @default("MEDIUM")
+  dueAt          DateTime?
+  completedAt    DateTime?
+  completedById  String?
+  decision       String?
+  decisionNote   String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  tenant         Tenant       @relation(fields: [tenantId], references: [id])
+  step           WorkflowStep @relation(fields: [stepId], references: [id])
+  assignedTo     User?        @relation(fields: [assignedToId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, assignedToId])
+  @@index([tenantId, dueAt])
+  @@map("human_tasks")
+}
+
+model EscalationTicket {
+  id                String             @id @default(cuid())
+  tenantId          String
+  executionId       String?
+  agentId           String
+  reason            String
+  severity          EscalationSeverity @default(MEDIUM)
+  status            EscalationStatus   @default(OPEN)
+  contextJson       Json
+  recommendedAction String?
+  assignedToId      String?
+  resolvedAt        DateTime?
+  resolvedById      String?
+  resolutionNote    String?
+  slaDeadlineAt     DateTime?
+  slaBreachedAt     DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id])
+  execution         WorkflowExecution? @relation(fields: [executionId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, severity])
+  @@index([tenantId, agentId])
+  @@map("escalation_tickets")
+}
+
+// ============================================================
+// SECTION 4: INTEGRATION HUB
+// ============================================================
+
+model IntegrationConnection {
+  id                 String              @id @default(cuid())
+  tenantId           String
+  provider           IntegrationProvider
+  name               String
+  status             IntegrationStatus   @default(PENDING_AUTH)
+  authType           String
+  authSecretRef      String
+  scopesGranted      String[]
+  configJson         Json?
+  lastSyncAt         DateTime?
+  lastErrorAt        DateTime?
+  lastErrorMessage   String?
+  tokenExpiresAt     DateTime?
+  rateLimitRemaining Int?
+  rateLimitResetsAt  DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  revokedAt          DateTime?
+
+  tenant             Tenant              @relation(fields: [tenantId], references: [id])
+  logs               IntegrationLog[]
+
+  @@unique([tenantId, provider, name])
+  @@index([tenantId, status])
+  @@index([tokenExpiresAt])
+  @@map("integration_connections")
+}
+
+model IntegrationLog {
+  id                  String   @id @default(cuid())
+  connectionId        String
+  tenantId            String
+  agentId             String?
+  direction           String
+  operation           String
+  status              String
+  httpMethod          String?
+  endpointHash        String?
+  requestPayloadHash  String?
+  responseStatus      Int?
+  durationMs          Int?
+  errorMessage        String?
+  createdAt           DateTime @default(now())
+
+  connection          IntegrationConnection @relation(fields: [connectionId], references: [id])
+
+  @@index([connectionId, createdAt])
+  @@index([tenantId, agentId])
+  @@map("integration_logs")
+}
+
+model IntegrationWebhook {
+  id        String   @id @default(cuid())
+  tenantId  String
+  url       String
+  events    String[]
+  secret    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("integration_webhooks")
+}
+
+// ============================================================
+// SECTION 5: AI MEMORY
+// ============================================================
+
+model AgentWorkingMemory {
+  id          String   @id @default(cuid())
+  tenantId    String
+  agentId     String
+  sessionId   String   @unique
+  contextJson Json
+  ttlSeconds  Int      @default(86400)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, agentId])
+  @@map("agent_working_memory")
+}
+
+model AgentEpisodicMemory {
+  id          String   @id @default(cuid())
+  tenantId    String
+  agentId     String
+  entityType  String
+  entityId    String
+  summary     String
+  keyFacts    Json
+  lastUpdated DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@unique([tenantId, agentId, entityType, entityId])
+  @@index([tenantId, agentId])
+  @@map("agent_episodic_memory")
+}
+
+model AgentSemanticMemory {
+  id         String                          @id @default(cuid())
+  tenantId   String
+  agentId    String
+  content    String
+  sourceType String
+  sourceId   String?
+  embedding  Unsupported("vector(1536)")?
+  metadata   Json?
+  createdAt  DateTime                        @default(now())
+
+  @@index([tenantId, agentId])
+  @@map("agent_semantic_memory")
+}
+
+// ============================================================
+// SECTION 6: AUDIT & COMPLIANCE
+// ============================================================
+
+model AuditLog {
+  id          String         @id @default(cuid())
+  tenantId    String
+  actorType   AuditActorType
+  actorId     String
+  action      String
+  entityType  String
+  entityId    String
+  beforeJson  Json?
+  afterJson   Json?
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  timestamp   DateTime       @default(now())
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, actorId])
+  @@index([tenantId, timestamp])
+  @@map("audit_logs")
+}
+
+model AgentAction {
+  id              String   @id @default(cuid())
+  tenantId        String
+  agentId         String
+  executionId     String?
+  actionType      String
+  entityType      String?
+  entityId        String?
+  inputHash       String?
+  outputHash      String?
+  toolCalled      String?
+  confidenceScore Float?
+  durationMs      Int?
+  tokenUsed       Int?
+  costUsd         Decimal?
+  metadata        Json?
+  timestamp       DateTime @default(now())
+
+  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, agentId])
+  @@index([tenantId, actionType])
+  @@index([tenantId, timestamp])
+  @@map("agent_actions")
+}
+
+// ============================================================
+// SECTION 7: NOTIFICATIONS
+// ============================================================
+
+model NotificationPreference {
+  id        String              @id @default(cuid())
+  tenantId  String
+  userId    String?
+  eventType String
+  channels  NotificationChannel[]
+  enabled   Boolean             @default(true)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  tenant    Tenant              @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, userId, eventType])
+  @@map("notification_preferences")
+}
+
+model NotificationLog {
+  id          String              @id @default(cuid())
+  tenantId    String
+  userId      String?
+  channel     NotificationChannel
+  eventType   String
+  subject     String?
+  status      String
+  providerRef String?
+  sentAt      DateTime?
+  failedAt    DateTime?
+  errorMsg    String?
+  createdAt   DateTime            @default(now())
+
+  @@index([tenantId, userId])
+  @@index([tenantId, eventType])
+  @@map("notification_logs")
+}
+
+model NotificationTemplate {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  subject   String
+  body      String   @db.Text
+  channel   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, name])
+  @@map("notification_templates")
+}
+
+// ============================================================
+// SECTION 8: BILLING
+// ============================================================
+
+model BillingEvent {
+  id            String           @id @default(cuid())
+  tenantId      String
+  eventType     BillingEventType
+  agentId       String?
+  amountUsd     Decimal?
+  currency      String           @default("USD")
+  stripeEventId String?          @unique
+  metadata      Json?
+  createdAt     DateTime         @default(now())
+
+  tenant        Tenant           @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, eventType])
+  @@index([tenantId, createdAt])
+  @@map("billing_events")
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  tenantId        String
+  stripeInvoiceId String?       @unique
+  periodStart     DateTime
+  periodEnd       DateTime
+  subtotalUsd     Decimal
+  taxUsd          Decimal       @default(0)
+  totalUsd        Decimal
+  status          InvoiceStatus @default(DRAFT)
+  pdfUrl          String?
+  paidAt          DateTime?
+  dueAt           DateTime?
+  lineItems       Json
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant          Tenant        @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, periodStart])
+  @@map("invoices")
+}
+
+model UsageMetric {
+  id            String   @id @default(cuid())
+  tenantId      String
+  agentId       String
+  periodStart   DateTime
+  periodEnd     DateTime
+  taskCount     Int      @default(0)
+  tokenCount    Int      @default(0)
+  costUsd       Decimal  @default(0)
+  escalationCount Int    @default(0)
+  errorCount    Int      @default(0)
+  avgDurationMs Float?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, agentId, periodStart])
+  @@index([tenantId, agentId])
+  @@map("usage_metrics")
+}
+
+model AnalyticsReport {
+  id          String    @id @default(cuid())
+  tenantId    String
+  createdBy   String?
+  type        String
+  format      String    @default("json")
+  status      String    @default("pending")
+  dateRange   Json?
+  filters     Json?
+  resultData  Json?
+  fileUrl     String?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, type])
+  @@index([tenantId, status])
+  @@map("analytics_reports")
+}
+
+// ============================================================
+// SECTION 9: DOMAIN MODELS — CUSTOMER OPERATIONS
+// ============================================================
+
+model SupportInteraction {
+  id               String   @id @default(cuid())
+  tenantId         String
+  customerId       String
+  customerEmail    String?
+  channel          String
+  intentCategory   String?
+  messageCount     Int      @default(0)
+  resolutionStatus String   @default("pending")
+  escalatedToId    String?
+  refundProcessed  Boolean  @default(false)
+  refundAmountUsd  Decimal?
+  sentimentScore   Float?
+  confidenceScore  Float?
+  ticketId         String?
+  crmLogId         String?
+  csatScore        Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  resolvedAt       DateTime?
+
+  @@index([tenantId, customerId])
+  @@index([tenantId, resolutionStatus])
+  @@index([tenantId, createdAt])
+  @@map("support_interactions")
+}
+
+// ============================================================
+// SECTION 10: DOMAIN MODELS — SALES & MARKETING
+// ============================================================
+
+model LeadRecord {
+  id               String   @id @default(cuid())
+  tenantId         String
+  contactName      String
+  email            String
+  phone            String?
+  company          String?
+  role             String?
+  source           String
+  icpScore         Int?
+  bantScore        Int?
+  status           String   @default("unqualified")
+  sequenceId       String?
+  sequenceStep     Int?     @default(0)
+  meetingBooked    Boolean  @default(false)
+  meetingAt        DateTime?
+  assignedAeId     String?
+  enrichmentData   Json?
+  crmLeadId        String?
+  lastContactedAt  DateTime?
+  convertedAt      DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  outreachActivities OutreachActivity[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, status])
+  @@index([tenantId, assignedAeId])
+  @@map("lead_records")
+}
+
+model OutreachActivity {
+  id             String   @id @default(cuid())
+  tenantId       String
+  leadId         String
+  type           String
+  channel        String
+  subject        String?
+  sentimentScore Float?
+  outcome        String?
+  createdAt      DateTime @default(now())
+
+  lead           LeadRecord @relation(fields: [leadId], references: [id])
+
+  @@index([tenantId, leadId])
+  @@index([tenantId, createdAt])
+  @@map("outreach_activities")
+}
+
+model OpportunitySummary {
+  id                    String   @id @default(cuid())
+  tenantId              String
+  crmOpportunityId      String
+  companyName           String
+  dealValueUsd          Decimal?
+  stage                 String?
+  closeProbability      Float?
+  daysInStage           Int?
+  lastActivityDate      DateTime?
+  riskLevel             String   @default("green")
+  summaryJson           Json
+  openActionItems       Json?
+  nextRecommendedAction String?
+  generatedAt           DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([tenantId, crmOpportunityId])
+  @@index([tenantId, riskLevel])
+  @@map("opportunity_summaries")
+}
+
+model DraftCommunication {
+  id             String   @id @default(cuid())
+  tenantId       String
+  aeUserId       String
+  opportunityId  String?
+  type           String   // follow_up | proposal | contract | intro
+  subject        String
+  bodyDraft      String   @db.Text
+  status         String   @default("draft") // draft | reviewed | sent | discarded
+  sentAt         DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([tenantId, aeUserId])
+  @@index([tenantId, status])
+  @@map("draft_communications")
+}
+
+// ============================================================
+// SECTION 11: DOMAIN MODELS — HR & PEOPLE OPS
+// ============================================================
+
+model OnboardingRecord {
+  id                String   @id @default(cuid())
+  tenantId          String
+  employeeId        String
+  employeeName      String
+  email             String
+  role              String
+  department        String?
+  startDate         DateTime
+  checklistTemplate String
+  status            String   @default("pre_join")
+  completionPercent Int      @default(0)
+  itAccessStatus    String   @default("pending")
+  documentsStatus   String   @default("pending")
+  policiesSignedAt  DateTime?
+  day30ReviewAt     DateTime?
+  day60ReviewAt     DateTime?
+  day90ReviewAt     DateTime?
+  probationEndAt    DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  checklistItems    OnboardingChecklistItem[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, startDate])
+  @@map("onboarding_records")
+}
+
+model OnboardingChecklistItem {
+  id             String           @id @default(cuid())
+  onboardingId   String
+  tenantId       String
+  category       String
+  title          String
+  description    String?
+  dueDate        DateTime?
+  completedAt    DateTime?
+  completedById  String?
+  status         String           @default("pending")
+  reminderSentAt DateTime?
+  createdAt      DateTime         @default(now())
+
+  onboarding     OnboardingRecord @relation(fields: [onboardingId], references: [id])
+
+  @@index([onboardingId])
+  @@index([tenantId, status])
+  @@map("onboarding_checklist_items")
+}
+
+model PayrollValidationRun {
+  id               String           @id @default(cuid())
+  tenantId         String
+  periodStart      DateTime
+  periodEnd        DateTime
+  employeeCount    Int
+  totalGrossUsd    Decimal?
+  totalNetUsd      Decimal?
+  status           PayrollRunStatus @default(PENDING)
+  exceptionCount   Int              @default(0)
+  criticalCount    Int      @default(0)
+  warningCount     Int      @default(0)
+  approvedByUserId String?
+  approvedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  exceptions       PayrollException[]
+
+  @@index([tenantId, periodStart])
+  @@map("payroll_validation_runs")
+}
+
+model PayrollException {
+  id            String               @id @default(cuid())
+  runId         String
+  tenantId      String
+  employeeId    String
+  employeeName  String
+  field         String
+  severity      String
+  description   String
+  currentValue  String?
+  expectedValue String?
+  resolved      Boolean              @default(false)
+  resolvedNote  String?
+  createdAt     DateTime             @default(now())
+
+  run           PayrollValidationRun @relation(fields: [runId], references: [id])
+
+  @@index([runId])
+  @@index([tenantId, severity])
+  @@map("payroll_exceptions")
+}
+
+// ============================================================
+// SECTION 12: DOMAIN MODELS — FINANCE & PROCUREMENT
+// ============================================================
+
+model FinanceInvoice {
+  id                  String   @id @default(cuid())
+  tenantId            String
+  vendorId            String?
+  vendorName          String
+  invoiceNumber       String
+  invoiceDate         DateTime
+  dueDate             DateTime?
+  subtotal            Decimal
+  taxAmount           Decimal  @default(0)
+  totalAmount         Decimal
+  currency            String   @default("USD")
+  status              String   @default("received")
+  matchingType        String?
+  poReference         String?
+  grnReference        String?
+  priceVariancePct    Float?
+  quantityVariancePct Float?
+  riskScore           Float?
+  duplicateFlag       Boolean  @default(false)
+  extractionConfidence Float?
+  paymentBatchId      String?
+  paidAt              DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([tenantId, vendorId, invoiceNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, dueDate])
+  @@map("finance_invoices")
+}
+
+model ReceivableInvoice {
+  id              String   @id @default(cuid())
+  tenantId        String
+  customerId      String
+  customerName    String
+  invoiceNumber   String
+  invoiceDate     DateTime
+  dueDate         DateTime
+  amount          Decimal
+  currency        String   @default("USD")
+  paidAmount      Decimal  @default(0)
+  status          String   @default("open")
+  daysPastDue     Int?
+  agingBucket     String?
+  riskCategory    String?
+  collectionProb  Float?
+  lastFollowUpAt  DateTime?
+  followUpCount   Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([tenantId, customerId, invoiceNumber])
+  @@index([tenantId, status])
+  @@index([tenantId, dueDate])
+  @@map("receivable_invoices")
+}
+
+model PurchaseRequisition {
+  id              String   @id @default(cuid())
+  tenantId        String
+  prNumber        String
+  requestedById   String
+  department      String
+  category        String
+  description     String
+  estimatedAmount Decimal
+  currency        String   @default("USD")
+  status          String   @default("submitted")
+  policyCheckResult Json?
+  budgetAvailable Boolean?
+  approvedById    String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  poId            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  quotes          SupplierQuote[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, requestedById])
+  @@map("purchase_requisitions")
+}
+
+model SupplierQuote {
+  id            String              @id @default(cuid())
+  tenantId      String
+  prId          String
+  supplierName  String
+  supplierId    String?
+  unitPrice     Decimal
+  totalPrice    Decimal
+  currency      String              @default("USD")
+  deliveryDays  Int?
+  paymentTerms  String?
+  validUntil    DateTime?
+  scoreTotal    Float?
+  scoreBreakdown Json?
+  recommended   Boolean             @default(false)
+  selectedAt    DateTime?
+  createdAt     DateTime            @default(now())
+
+  pr            PurchaseRequisition @relation(fields: [prId], references: [id])
+
+  @@index([tenantId, prId])
+  @@map("supplier_quotes")
+}
+
+// ============================================================
+// SECTION 13: DOMAIN MODELS — GOVERNANCE, RISK & CONTROL
+// ============================================================
+
+model ComplianceViolation {
+  id              String             @id @default(cuid())
+  tenantId        String
+  controlId       String
+  controlName     String
+  ruleViolated    String
+  entityType      String
+  entityId        String
+  severity        EscalationSeverity
+  description     String
+  evidenceJson    Json?
+  status          String             @default("open")
+  assignedToId    String?
+  resolvedAt      DateTime?
+  resolvedById    String?
+  resolutionNote  String?
+  detectedAt      DateTime           @default(now())
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([tenantId, severity])
+  @@index([tenantId, status])
+  @@index([tenantId, controlId])
+  @@map("compliance_violations")
+}
+
+model RiskRegisterItem {
+  id              String   @id @default(cuid())
+  tenantId        String
+  category        String
+  title           String
+  description     String
+  impactScore     Int
+  likelihoodScore Int
+  riskScore       Int
+  riskLevel       String
+  ownerId         String?
+  mitigationPlan  String?
+  status          String   @default("open")
+  reviewDate      DateTime?
+  closedAt        DateTime?
+  trendDirection  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  mitigationActions RiskMitigationAction[]
+
+  @@index([tenantId, riskLevel])
+  @@index([tenantId, category])
+  @@map("risk_register_items")
+}
+
+model RiskMitigationAction {
+  id          String           @id @default(cuid())
+  riskId      String
+  tenantId    String
+  action      String
+  ownerId     String?
+  dueDate     DateTime?
+  status      String           @default("open")
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  risk        RiskRegisterItem @relation(fields: [riskId], references: [id])
+
+  @@index([riskId])
+  @@index([tenantId, status])
+  @@map("risk_mitigation_actions")
+}
+
+model ContractRecord {
+  id               String   @id @default(cuid())
+  tenantId         String
+  fileName         String
+  storageRef       String
+  contractType     String
+  counterparty     String
+  effectiveDate    DateTime?
+  expiryDate       DateTime?
+  renewalDate      DateTime?
+  autoRenewal      Boolean  @default(false)
+  totalValue       Decimal?
+  currency         String?
+  status           String   @default("under_review")
+  riskScore        Float?
+  riskSummaryJson  Json?
+  keyTermsJson     Json?
+  obligationsJson  Json?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  approvedByUserId String?
+  approvedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, expiryDate])
+  @@index([tenantId, counterparty])
+  @@map("contract_records")
+}
+
+// ============================================================
+// SECTION 14: KNOWLEDGE BASE
+// ============================================================
+
+model KnowledgeArticle {
+  id           String   @id @default(cuid())
+  tenantId     String
+  agentId      String
+  title        String
+  content      String
+  category     String?
+  tags         String[]
+  isActive     Boolean  @default(true)
+  viewCount    Int      @default(0)
+  helpfulCount Int      @default(0)
+  sourceType   String   @default("manual")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tenantId, agentId])
+  @@index([tenantId, tags])
+  @@map("knowledge_articles")
+}
+
+// ============================================================
+// SECTION 15: DEAD LETTER QUEUE
+// ============================================================
+
+model DlqEntry {
+  id          String   @id @default(cuid())
+  topic       String
+  partition   Int
+  offset      String
+  key         String?
+  value       Json
+  headers     Json     @default("{}")
+  error       String
+  retryCount  Int      @default(0)
+  maxRetries  Int      @default(3)
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  processedAt DateTime?
+
+  @@index([topic, status])
+  @@map("dlq_entries")
+}

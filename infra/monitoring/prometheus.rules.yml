@@ -1,0 +1,99 @@
+# ─── Prometheus Alerting Rules (P6 Section 11) ────────────────────────────────
+#
+# Five alert rules covering circuit breaker, workflow failures, LLM fallback,
+# escalation SLA, and DLQ growth.
+
+groups:
+  - name: adwp_error_handling
+    interval: 30s
+    rules:
+      # ── Alert 1: Circuit Breaker Open ─────────────────────────────────
+      # Fires when any integration circuit breaker has been OPEN for >5 minutes.
+      - alert: CircuitBreakerOpen
+        expr: |
+          adwp_circuit_breaker_state{state="OPEN"} == 1
+          and on (provider)
+          (time() - adwp_circuit_breaker_open_since) > 300
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: 'Circuit breaker OPEN for {{ $labels.provider }}'
+          description: >-
+            The circuit breaker for provider {{ $labels.provider }} in service
+            {{ $labels.service }} has been OPEN for more than 5 minutes.
+            Failure count: {{ $labels.failure_count }}.
+          runbook_url: 'https://wiki.internal/runbooks/circuit-breaker-open'
+
+      # ── Alert 2: Workflow Failure Rate High ───────────────────────────
+      # Fires when workflow execution failure rate exceeds 10% over a 15m window.
+      - alert: WorkflowFailureRateHigh
+        expr: |
+          (
+            sum(rate(adwp_workflow_executions_total{status="FAILED"}[15m]))
+            /
+            sum(rate(adwp_workflow_executions_total[15m]))
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: 'Workflow failure rate exceeds 10%'
+          description: >-
+            The workflow execution failure rate is {{ $value | humanizePercentage }}
+            over the last 15 minutes, exceeding the 10% threshold.
+          runbook_url: 'https://wiki.internal/runbooks/workflow-failure-rate'
+
+      # ── Alert 3: LLM Fallback Active ──────────────────────────────────
+      # Fires when the primary LLM provider circuit breaker is open,
+      # indicating the system is using fallback providers.
+      - alert: LLMFallbackActive
+        expr: |
+          adwp_circuit_breaker_state{provider=~"OPENAI|ANTHROPIC", state="OPEN"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          team: ai-runtime
+        annotations:
+          summary: 'LLM provider {{ $labels.provider }} circuit-broken — fallback active'
+          description: >-
+            The primary LLM provider {{ $labels.provider }} is circuit-broken.
+            AI agents are operating in LLM fallback mode with degraded capabilities.
+          runbook_url: 'https://wiki.internal/runbooks/llm-fallback'
+
+      # ── Alert 4: Escalation SLA Breach ────────────────────────────────
+      # Fires when any escalation has been pending for more than 30 minutes.
+      - alert: EscalationSLABreach
+        expr: |
+          (time() - adwp_escalation_created_timestamp) > 1800
+          and adwp_escalation_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: 'Escalation pending >30 minutes (SLA breach)'
+          description: >-
+            Escalation {{ $labels.escalation_id }} for agent {{ $labels.agent_id }}
+            in tenant {{ $labels.tenant_id }} has been pending for more than 30 minutes,
+            breaching the escalation SLA.
+          runbook_url: 'https://wiki.internal/runbooks/escalation-sla'
+
+      # ── Alert 5: DLQ Growing ──────────────────────────────────────────
+      # Fires when DLQ entry count increases by more than 50 in 1 hour.
+      - alert: DLQGrowing
+        expr: |
+          increase(adwp_dlq_entries_total[1h]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: 'DLQ growing rapidly — {{ $value }} new entries in 1 hour'
+          description: >-
+            The Dead Letter Queue has accumulated {{ $value }} new entries in the
+            last hour, exceeding the threshold of 50. Topics affected:
+            {{ $labels.topic }}.
+          runbook_url: 'https://wiki.internal/runbooks/dlq-growing'

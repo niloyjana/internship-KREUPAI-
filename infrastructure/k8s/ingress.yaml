@@ -1,0 +1,116 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: adwp-ingress
+  namespace: adwp
+  labels:
+    app.kubernetes.io/part-of: adwp
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+spec:
+  tls:
+    - hosts:
+        - app.adwp.io
+        - admin.adwp.io
+        - api.adwp.io
+      secretName: adwp-tls
+  rules:
+    # API routing — api.adwp.io
+    - host: api.adwp.io
+      http:
+        paths:
+          - path: /api/v1/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 3010
+          - path: /api/v1/tenants
+            pathType: Prefix
+            backend:
+              service:
+                name: tenant-service
+                port:
+                  number: 3011
+          - path: /api/v1/subscriptions
+            pathType: Prefix
+            backend:
+              service:
+                name: subscription-service
+                port:
+                  number: 3012
+          - path: /api/v1/agents
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-registry
+                port:
+                  number: 3013
+          - path: /api/v1/workflows
+            pathType: Prefix
+            backend:
+              service:
+                name: workflow-service
+                port:
+                  number: 3014
+          - path: /api/v1/integrations
+            pathType: Prefix
+            backend:
+              service:
+                name: integration-hub
+                port:
+                  number: 3015
+          - path: /api/v1/notifications
+            pathType: Prefix
+            backend:
+              service:
+                name: notification-service
+                port:
+                  number: 3016
+          - path: /api/v1/analytics
+            pathType: Prefix
+            backend:
+              service:
+                name: analytics-service
+                port:
+                  number: 3017
+          - path: /api/v1/ai
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-runtime
+                port:
+                  number: 8000
+
+    # Portal — app.adwp.io
+    - host: app.adwp.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: portal
+                port:
+                  number: 3000
+
+    # Admin — admin.adwp.io
+    - host: admin.adwp.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: admin
+                port:
+                  number: 3001

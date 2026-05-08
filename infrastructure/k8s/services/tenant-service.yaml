@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-service
+  namespace: adwp
+  labels:
+    app: tenant-service
+    app.kubernetes.io/part-of: adwp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tenant-service
+  template:
+    metadata:
+      labels:
+        app: tenant-service
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: tenant-service
+          image: ${ECR_REGISTRY}/adwp/tenant-service:latest
+          ports:
+            - containerPort: 3011
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: adwp-config
+            - secretRef:
+                name: adwp-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3011
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3011
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant-service
+  namespace: adwp
+  labels:
+    app: tenant-service
+spec:
+  type: ClusterIP
+  selector:
+    app: tenant-service
+  ports:
+    - port: 3011
+      targetPort: 3011
+      protocol: TCP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tenant-service-hpa
+  namespace: adwp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tenant-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

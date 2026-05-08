@@ -1,0 +1,268 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  EKS_CLUSTER: adwp-staging-eks
+  K8S_NAMESPACE: adwp
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ---- Build and Push Docker Images ----
+  build-services:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: auth-service
+            context: .
+            dockerfile: services/auth-service/Dockerfile
+          - service: tenant-service
+            context: .
+            dockerfile: services/tenant-service/Dockerfile
+          - service: subscription-service
+            context: .
+            dockerfile: services/subscription-service/Dockerfile
+          - service: agent-registry
+            context: .
+            dockerfile: services/agent-registry/Dockerfile
+          - service: workflow-service
+            context: .
+            dockerfile: services/workflow-service/Dockerfile
+          - service: integration-hub
+            context: .
+            dockerfile: services/integration-hub/Dockerfile
+          - service: notification-service
+            context: .
+            dockerfile: services/notification-service/Dockerfile
+          - service: analytics-service
+            context: .
+            dockerfile: services/analytics-service/Dockerfile
+          - service: ai-runtime
+            context: ai-runtime
+            dockerfile: ai-runtime/Dockerfile
+          - service: portal
+            context: .
+            dockerfile: apps/portal/Dockerfile
+          - service: admin
+            context: .
+            dockerfile: apps/admin/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/adwp/${{ matrix.service }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/adwp/${{ matrix.service }}:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---- Deploy to Kubernetes ----
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-services
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy namespace and config
+        run: |
+          kubectl apply -f infrastructure/k8s/namespace.yaml
+          kubectl apply -f infrastructure/k8s/configmap.yaml
+          kubectl apply -f infrastructure/k8s/secrets.yaml
+
+      - name: Deploy services
+        run: |
+          SERVICES=(
+            "auth-service"
+            "tenant-service"
+            "subscription-service"
+            "agent-registry"
+            "workflow-service"
+            "integration-hub"
+            "notification-service"
+            "analytics-service"
+          )
+
+          for SERVICE in "${SERVICES[@]}"; do
+            sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g" infrastructure/k8s/services/${SERVICE}.yaml
+            sed -i "s|:latest|:${{ github.sha }}|g" infrastructure/k8s/services/${SERVICE}.yaml
+            kubectl apply -f infrastructure/k8s/services/${SERVICE}.yaml
+          done
+
+      - name: Deploy AI runtime
+        run: |
+          sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g" infrastructure/k8s/services/ai-runtime.yaml
+          sed -i "s|:latest|:${{ github.sha }}|g" infrastructure/k8s/services/ai-runtime.yaml
+          kubectl apply -f infrastructure/k8s/services/ai-runtime.yaml
+
+      - name: Deploy frontend apps
+        run: |
+          for APP in portal admin; do
+            sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g" infrastructure/k8s/apps/${APP}.yaml
+            sed -i "s|:latest|:${{ github.sha }}|g" infrastructure/k8s/apps/${APP}.yaml
+            kubectl apply -f infrastructure/k8s/apps/${APP}.yaml
+          done
+
+      - name: Deploy ingress
+        run: kubectl apply -f infrastructure/k8s/ingress.yaml
+
+      - name: Wait for rollout
+        run: |
+          DEPLOYMENTS=(
+            "auth-service"
+            "tenant-service"
+            "subscription-service"
+            "agent-registry"
+            "workflow-service"
+            "integration-hub"
+            "notification-service"
+            "analytics-service"
+            "ai-runtime"
+            "portal"
+            "admin"
+          )
+
+          for DEPLOY in "${DEPLOYMENTS[@]}"; do
+            echo "Waiting for ${DEPLOY} rollout..."
+            kubectl rollout status deployment/${DEPLOY} -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+          done
+
+  # ---- Smoke Tests ----
+  smoke-tests:
+    name: E2E Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run smoke tests
+        env:
+          STAGING_URL: https://staging-api.adwp.io
+        run: |
+          echo "Running smoke tests against staging..."
+
+          # Health check for each service
+          ENDPOINTS=(
+            "/api/v1/auth/health"
+            "/api/v1/tenants/health"
+            "/api/v1/subscriptions/health"
+            "/api/v1/agents/health"
+            "/api/v1/workflows/health"
+            "/api/v1/integrations/health"
+            "/api/v1/notifications/health"
+            "/api/v1/analytics/health"
+            "/api/v1/ai/health"
+          )
+
+          FAILED=0
+          for ENDPOINT in "${ENDPOINTS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${STAGING_URL}${ENDPOINT}" --max-time 10 || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "OK: ${ENDPOINT} (${STATUS})"
+            else
+              echo "FAIL: ${ENDPOINT} (${STATUS})"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [ $FAILED -gt 0 ]; then
+            echo "Smoke tests failed: ${FAILED} endpoints unhealthy"
+            exit 1
+          fi
+
+          echo "All smoke tests passed!"
+
+  # ---- Notify ----
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    needs: [deploy, smoke-tests]
+    if: always()
+
+    steps:
+      - name: Notify Slack on success
+        if: needs.smoke-tests.result == 'success'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "Staging deployment succeeded for commit ${{ github.sha }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Staging Deployment Succeeded* :white_check_mark:\n*Commit:* `${{ github.sha }}`\n*Branch:* `${{ github.ref_name }}`\n*By:* ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Notify Slack on failure
+        if: needs.smoke-tests.result == 'failure' || needs.deploy.result == 'failure'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "Staging deployment FAILED for commit ${{ github.sha }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Staging Deployment FAILED* :x:\n*Commit:* `${{ github.sha }}`\n*Branch:* `${{ github.ref_name }}`\n*By:* ${{ github.actor }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

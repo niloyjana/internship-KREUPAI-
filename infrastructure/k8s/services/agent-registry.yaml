@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-registry
+  namespace: adwp
+  labels:
+    app: agent-registry
+    app.kubernetes.io/part-of: adwp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-registry
+  template:
+    metadata:
+      labels:
+        app: agent-registry
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: agent-registry
+          image: ${ECR_REGISTRY}/adwp/agent-registry:latest
+          ports:
+            - containerPort: 3013
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: adwp-config
+            - secretRef:
+                name: adwp-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3013
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3013
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-registry
+  namespace: adwp
+  labels:
+    app: agent-registry
+spec:
+  type: ClusterIP
+  selector:
+    app: agent-registry
+  ports:
+    - port: 3013
+      targetPort: 3013
+      protocol: TCP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-registry-hpa
+  namespace: adwp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agent-registry
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

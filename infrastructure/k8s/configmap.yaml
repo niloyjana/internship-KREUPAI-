@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: adwp-config
+  namespace: adwp
+  labels:
+    app.kubernetes.io/part-of: adwp
+data:
+  # Database
+  DATABASE_URL: "postgresql://adwp:CHANGEME@adwp-postgres:5432/adwp"
+
+  # Redis
+  REDIS_URL: "redis://adwp-redis:6379"
+
+  # Kafka
+  KAFKA_BROKERS: "adwp-kafka-0.adwp-kafka:9092,adwp-kafka-1.adwp-kafka:9092,adwp-kafka-2.adwp-kafka:9092"
+
+  # Service URLs (internal)
+  AUTH_SERVICE_URL: "http://auth-service:3010"
+  TENANT_SERVICE_URL: "http://tenant-service:3011"
+  SUBSCRIPTION_SERVICE_URL: "http://subscription-service:3012"
+  AGENT_REGISTRY_URL: "http://agent-registry:3013"
+  WORKFLOW_SERVICE_URL: "http://workflow-service:3014"
+  INTEGRATION_HUB_URL: "http://integration-hub:3015"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:3016"
+  ANALYTICS_SERVICE_URL: "http://analytics-service:3017"
+  AI_RUNTIME_URL: "http://ai-runtime:8000"
+
+  # Platform
+  PLATFORM_URL: "https://app.adwp.io"
+  ENV: "production"
+  TENANT_ISOLATION_MODE: "rls"
+  LOG_LEVEL: "info"
+  NODE_ENV: "production"
+
+  # JWT config
+  JWT_ACCESS_EXPIRY: "15m"
+  JWT_REFRESH_EXPIRY: "7d"

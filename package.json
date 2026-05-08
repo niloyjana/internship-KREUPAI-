@@ -1,0 +1,51 @@
+{
+  "name": "@adwp/root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Digital Workforce Platform — Monorepo",
+  "scripts": {
+    "dev": "turbo run dev --concurrency 15",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "prepare": "husky",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @adwp/database generate",
+    "db:migrate": "pnpm --filter @adwp/database migrate:dev",
+    "db:migrate:deploy": "pnpm --filter @adwp/database migrate:deploy",
+    "db:seed": "pnpm --filter @adwp/database seed",
+    "db:studio": "pnpm --filter @adwp/database studio",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "@nestjs/core",
+      "unrs-resolver"
+    ]
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "@types/node": "^25.4.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "husky": "^9.0.0",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.2.0",
+    "turbo": "^2.8.20"
+  },
+  "dependencies": {
+    "@nestjs/throttler": "^5.2.0"
+  }
+}

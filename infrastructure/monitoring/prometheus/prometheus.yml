@@ -1,0 +1,213 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+  external_labels:
+    cluster: adwp
+    environment: production
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Rule files
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Scrape configurations
+scrape_configs:
+
+  # ---- Prometheus self-monitoring ----
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ---- NestJS Platform Services ----
+  - job_name: auth-service
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: auth-service
+        action: keep
+    static_configs:
+      - targets: ["auth-service:3010"]
+        labels:
+          service: auth-service
+
+  - job_name: tenant-service
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: tenant-service
+        action: keep
+    static_configs:
+      - targets: ["tenant-service:3011"]
+        labels:
+          service: tenant-service
+
+  - job_name: subscription-service
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: subscription-service
+        action: keep
+    static_configs:
+      - targets: ["subscription-service:3012"]
+        labels:
+          service: subscription-service
+
+  - job_name: agent-registry
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: agent-registry
+        action: keep
+    static_configs:
+      - targets: ["agent-registry:3013"]
+        labels:
+          service: agent-registry
+
+  - job_name: workflow-service
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: workflow-service
+        action: keep
+    static_configs:
+      - targets: ["workflow-service:3014"]
+        labels:
+          service: workflow-service
+
+  - job_name: integration-hub
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: integration-hub
+        action: keep
+    static_configs:
+      - targets: ["integration-hub:3015"]
+        labels:
+          service: integration-hub
+
+  - job_name: notification-service
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: notification-service
+        action: keep
+    static_configs:
+      - targets: ["notification-service:3016"]
+        labels:
+          service: notification-service
+
+  - job_name: analytics-service
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: analytics-service
+        action: keep
+    static_configs:
+      - targets: ["analytics-service:3017"]
+        labels:
+          service: analytics-service
+
+  # ---- AI Runtime ----
+  - job_name: ai-runtime
+    metrics_path: /health
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: ai-runtime
+        action: keep
+    static_configs:
+      - targets: ["ai-runtime:8000"]
+        labels:
+          service: ai-runtime
+
+  # ---- Infrastructure Exporters ----
+
+  # PostgreSQL Exporter
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          service: postgresql
+
+  # Redis Exporter
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: redis
+
+  # Kafka Exporter
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+        labels:
+          service: kafka
+
+  # ---- Kubernetes Service Discovery ----
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [adwp]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: pod

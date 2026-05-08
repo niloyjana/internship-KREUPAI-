@@ -1,0 +1,459 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag to deploy (defaults to latest staging tag)"
+        required: false
+        type: string
+      skip_canary:
+        description: "Skip canary stages and deploy directly"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  EKS_CLUSTER: adwp-production-eks
+  K8S_NAMESPACE: adwp
+  IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ---- Build and Push Production Images ----
+  build:
+    name: Build Production Images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: auth-service
+            context: .
+            dockerfile: services/auth-service/Dockerfile
+          - service: tenant-service
+            context: .
+            dockerfile: services/tenant-service/Dockerfile
+          - service: subscription-service
+            context: .
+            dockerfile: services/subscription-service/Dockerfile
+          - service: agent-registry
+            context: .
+            dockerfile: services/agent-registry/Dockerfile
+          - service: workflow-service
+            context: .
+            dockerfile: services/workflow-service/Dockerfile
+          - service: integration-hub
+            context: .
+            dockerfile: services/integration-hub/Dockerfile
+          - service: notification-service
+            context: .
+            dockerfile: services/notification-service/Dockerfile
+          - service: analytics-service
+            context: .
+            dockerfile: services/analytics-service/Dockerfile
+          - service: ai-runtime
+            context: ai-runtime
+            dockerfile: ai-runtime/Dockerfile
+          - service: portal
+            context: .
+            dockerfile: apps/portal/Dockerfile
+          - service: admin
+            context: .
+            dockerfile: apps/admin/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/adwp/${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/adwp/${{ matrix.service }}:production-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---- Canary Stage 1: 10% traffic ----
+  canary-10:
+    name: "Canary: 10% Traffic"
+    runs-on: ubuntu-latest
+    needs: build
+    if: inputs.skip_canary != true
+    environment: production-canary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy canary pods (10%)
+        run: |
+          ALL_SERVICES=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service" "ai-runtime"
+            "portal" "admin"
+          )
+
+          for SERVICE in "${ALL_SERVICES[@]}"; do
+            # Get current replica count
+            REPLICAS=$(kubectl get deployment ${SERVICE} -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "2")
+            CANARY_REPLICAS=$(( (REPLICAS + 9) / 10 ))  # At least 1 canary pod (10% rounded up)
+            [ $CANARY_REPLICAS -lt 1 ] && CANARY_REPLICAS=1
+
+            echo "Deploying canary for ${SERVICE}: ${CANARY_REPLICAS} canary pods"
+
+            # Create canary deployment
+            kubectl get deployment ${SERVICE} -n ${{ env.K8S_NAMESPACE }} -o yaml | \
+              sed "s|name: ${SERVICE}|name: ${SERVICE}-canary|g" | \
+              sed "s|app: ${SERVICE}|app: ${SERVICE},version: canary|g" | \
+              sed "s|replicas:.*|replicas: ${CANARY_REPLICAS}|" | \
+              sed "s|:production-latest|:${{ env.IMAGE_TAG }}|g" | \
+              kubectl apply -f - || true
+          done
+
+      - name: Wait for canary rollout
+        run: |
+          ALL_SERVICES=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service" "ai-runtime"
+            "portal" "admin"
+          )
+
+          for SERVICE in "${ALL_SERVICES[@]}"; do
+            kubectl rollout status deployment/${SERVICE}-canary -n ${{ env.K8S_NAMESPACE }} --timeout=300s || true
+          done
+
+      - name: Run smoke tests (canary 10%)
+        run: |
+          echo "Running smoke tests against canary pods..."
+          sleep 30
+
+          ENDPOINTS=(
+            "/api/v1/auth/health"
+            "/api/v1/tenants/health"
+            "/api/v1/agents/health"
+            "/api/v1/ai/health"
+          )
+
+          PROD_URL="https://api.adwp.io"
+          FAILED=0
+          for ENDPOINT in "${ENDPOINTS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${PROD_URL}${ENDPOINT}" --max-time 10 || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "OK: ${ENDPOINT} (${STATUS})"
+            else
+              echo "FAIL: ${ENDPOINT} (${STATUS})"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [ $FAILED -gt 0 ]; then
+            echo "Canary smoke tests failed. Initiating rollback..."
+            exit 1
+          fi
+
+  # ---- Canary Stage 2: 50% traffic ----
+  canary-50:
+    name: "Canary: 50% Traffic"
+    runs-on: ubuntu-latest
+    needs: canary-10
+    if: inputs.skip_canary != true
+    environment: production-canary
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Scale canary to 50%
+        run: |
+          ALL_SERVICES=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service" "ai-runtime"
+            "portal" "admin"
+          )
+
+          for SERVICE in "${ALL_SERVICES[@]}"; do
+            REPLICAS=$(kubectl get deployment ${SERVICE} -n ${{ env.K8S_NAMESPACE }} -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "2")
+            CANARY_REPLICAS=$(( REPLICAS / 2 ))
+            [ $CANARY_REPLICAS -lt 1 ] && CANARY_REPLICAS=1
+
+            echo "Scaling canary for ${SERVICE} to ${CANARY_REPLICAS} replicas (50%)"
+            kubectl scale deployment/${SERVICE}-canary -n ${{ env.K8S_NAMESPACE }} --replicas=${CANARY_REPLICAS} || true
+          done
+
+      - name: Wait and monitor (5 minutes)
+        run: |
+          echo "Monitoring canary at 50% for 5 minutes..."
+          sleep 300
+
+      - name: Run smoke tests (canary 50%)
+        run: |
+          ENDPOINTS=(
+            "/api/v1/auth/health"
+            "/api/v1/tenants/health"
+            "/api/v1/subscriptions/health"
+            "/api/v1/agents/health"
+            "/api/v1/workflows/health"
+            "/api/v1/integrations/health"
+            "/api/v1/notifications/health"
+            "/api/v1/analytics/health"
+            "/api/v1/ai/health"
+          )
+
+          PROD_URL="https://api.adwp.io"
+          FAILED=0
+          for ENDPOINT in "${ENDPOINTS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${PROD_URL}${ENDPOINT}" --max-time 10 || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "OK: ${ENDPOINT} (${STATUS})"
+            else
+              echo "FAIL: ${ENDPOINT} (${STATUS})"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [ $FAILED -gt 0 ]; then
+            echo "Canary 50% smoke tests failed. Initiating rollback..."
+            exit 1
+          fi
+
+  # ---- Full Production Deploy (100%) ----
+  deploy-full:
+    name: "Deploy: 100% Traffic"
+    runs-on: ubuntu-latest
+    needs: [build, canary-50]
+    if: always() && needs.build.result == 'success' && (needs.canary-50.result == 'success' || needs.canary-50.result == 'skipped')
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy namespace and config
+        run: |
+          kubectl apply -f infrastructure/k8s/namespace.yaml
+          kubectl apply -f infrastructure/k8s/configmap.yaml
+
+      - name: Deploy all services (100%)
+        run: |
+          SERVICES=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service"
+          )
+
+          for SERVICE in "${SERVICES[@]}"; do
+            sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g" infrastructure/k8s/services/${SERVICE}.yaml
+            sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" infrastructure/k8s/services/${SERVICE}.yaml
+            kubectl apply -f infrastructure/k8s/services/${SERVICE}.yaml
+          done
+
+          # AI Runtime
+          sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g" infrastructure/k8s/services/ai-runtime.yaml
+          sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" infrastructure/k8s/services/ai-runtime.yaml
+          kubectl apply -f infrastructure/k8s/services/ai-runtime.yaml
+
+          # Frontend apps
+          for APP in portal admin; do
+            sed -i "s|\${ECR_REGISTRY}|${{ env.ECR_REGISTRY }}|g" infrastructure/k8s/apps/${APP}.yaml
+            sed -i "s|:latest|:${{ env.IMAGE_TAG }}|g" infrastructure/k8s/apps/${APP}.yaml
+            kubectl apply -f infrastructure/k8s/apps/${APP}.yaml
+          done
+
+      - name: Deploy ingress
+        run: kubectl apply -f infrastructure/k8s/ingress.yaml
+
+      - name: Wait for rollout
+        run: |
+          ALL_DEPLOYMENTS=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service" "ai-runtime"
+            "portal" "admin"
+          )
+
+          for DEPLOY in "${ALL_DEPLOYMENTS[@]}"; do
+            echo "Waiting for ${DEPLOY} rollout..."
+            kubectl rollout status deployment/${DEPLOY} -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+          done
+
+      - name: Clean up canary deployments
+        run: |
+          ALL_SERVICES=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service" "ai-runtime"
+            "portal" "admin"
+          )
+
+          for SERVICE in "${ALL_SERVICES[@]}"; do
+            kubectl delete deployment ${SERVICE}-canary -n ${{ env.K8S_NAMESPACE }} --ignore-not-found=true
+          done
+
+      - name: Final smoke tests
+        run: |
+          ENDPOINTS=(
+            "/api/v1/auth/health"
+            "/api/v1/tenants/health"
+            "/api/v1/subscriptions/health"
+            "/api/v1/agents/health"
+            "/api/v1/workflows/health"
+            "/api/v1/integrations/health"
+            "/api/v1/notifications/health"
+            "/api/v1/analytics/health"
+            "/api/v1/ai/health"
+          )
+
+          PROD_URL="https://api.adwp.io"
+          FAILED=0
+          for ENDPOINT in "${ENDPOINTS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${PROD_URL}${ENDPOINT}" --max-time 10 || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "OK: ${ENDPOINT} (${STATUS})"
+            else
+              echo "FAIL: ${ENDPOINT} (${STATUS})"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          if [ $FAILED -gt 0 ]; then
+            echo "Production smoke tests failed: ${FAILED} endpoints unhealthy"
+            exit 1
+          fi
+
+          echo "All production smoke tests passed!"
+
+  # ---- Rollback on Failure ----
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [canary-10, canary-50, deploy-full]
+    if: failure()
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Rollback deployments
+        run: |
+          ALL_DEPLOYMENTS=(
+            "auth-service" "tenant-service" "subscription-service"
+            "agent-registry" "workflow-service" "integration-hub"
+            "notification-service" "analytics-service" "ai-runtime"
+            "portal" "admin"
+          )
+
+          for DEPLOY in "${ALL_DEPLOYMENTS[@]}"; do
+            echo "Rolling back ${DEPLOY}..."
+            kubectl rollout undo deployment/${DEPLOY} -n ${{ env.K8S_NAMESPACE }} || true
+            kubectl delete deployment ${DEPLOY}-canary -n ${{ env.K8S_NAMESPACE }} --ignore-not-found=true
+          done
+
+          echo "Rollback completed."
+
+  # ---- Notify ----
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    needs: [deploy-full, rollback]
+    if: always()
+
+    steps:
+      - name: Notify Slack on success
+        if: needs.deploy-full.result == 'success'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "Production deployment succeeded!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment Succeeded* :white_check_mark:\n*Image Tag:* `${{ env.IMAGE_TAG }}`\n*Triggered by:* ${{ github.actor }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Notify Slack on failure
+        if: needs.deploy-full.result == 'failure' || needs.rollback.result == 'success'
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "Production deployment FAILED - rollback initiated",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment FAILED - Rollback Initiated* :rotating_light:\n*Image Tag:* `${{ env.IMAGE_TAG }}`\n*Triggered by:* ${{ github.actor }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
