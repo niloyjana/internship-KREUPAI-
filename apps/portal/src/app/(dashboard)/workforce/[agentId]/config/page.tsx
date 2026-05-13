@@ -23,6 +23,7 @@ import PolicyTab from '@/components/workforce/config/PolicyTab';
 import EscalationTab from '@/components/workforce/config/EscalationTab';
 import IntegrationsTab from '@/components/workforce/config/IntegrationsTab';
 import HistoryTab from '@/components/workforce/config/HistoryTab';
+import ModelTab from '@/components/workforce/config/ModelTab';
 
 /* ------------------------------------------------------------------ */
 /*  Tab Configuration                                                  */
@@ -30,6 +31,7 @@ import HistoryTab from '@/components/workforce/config/HistoryTab';
 
 const TABS = [
   { key: 'identity', label: 'Identity', icon: User },
+  { key: 'model', label: 'Model', icon: Bot },
   { key: 'policy', label: 'Policy', icon: Shield },
   { key: 'escalation', label: 'Escalation', icon: AlertTriangle },
   { key: 'integrations', label: 'Integrations', icon: Plug },
@@ -143,16 +145,12 @@ export default function AgentConfigPage() {
                 <span className="text-sm text-gray-400">Configuration</span>
               </div>
             </div>
-            <p className="text-sm text-gray-500 mt-0.5 truncate">
-              {agent.description}
-            </p>
+            <p className="text-sm text-gray-500 mt-0.5 truncate">{agent.description}</p>
           </div>
           <span
             className={cn(
               'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium flex-shrink-0',
-              config.isEnabled
-                ? 'bg-green-50 text-green-700'
-                : 'bg-amber-50 text-amber-700',
+              config.isEnabled ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700',
             )}
           >
             {config.isEnabled ? 'Active' : 'Paused'}
@@ -186,21 +184,12 @@ export default function AgentConfigPage() {
 
       {/* Tab Content */}
       <div>
-        {activeTab === 'identity' && (
-          <IdentityTab agentId={agentId} config={config} />
-        )}
-        {activeTab === 'policy' && (
-          <PolicyTab agentId={agentId} config={config} />
-        )}
-        {activeTab === 'escalation' && (
-          <EscalationTab agentId={agentId} config={config} />
-        )}
-        {activeTab === 'integrations' && (
-          <IntegrationsTab agentId={agentId} config={config} />
-        )}
-        {activeTab === 'history' && (
-          <HistoryTab agentId={agentId} />
-        )}
+        {activeTab === 'identity' && <IdentityTab agentId={agentId} config={config} />}
+        {activeTab === 'model' && <ModelTab agentId={agentId} config={config} />}
+        {activeTab === 'policy' && <PolicyTab agentId={agentId} config={config} />}
+        {activeTab === 'escalation' && <EscalationTab agentId={agentId} config={config} />}
+        {activeTab === 'integrations' && <IntegrationsTab agentId={agentId} config={config} />}
+        {activeTab === 'history' && <HistoryTab agentId={agentId} />}
       </div>
     </div>
   );

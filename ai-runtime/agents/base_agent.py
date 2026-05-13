@@ -127,6 +127,13 @@ class BaseAgent(ABC):
                 all_pii_detected,
             )
 
+        # Merge LLM settings from policy if not in kwargs
+        if agent_policy and "llm" in agent_policy:
+            llm_settings = agent_policy["llm"]
+            for key in ["provider", "model", "temperature", "max_tokens"]:
+                if key not in kwargs and key in llm_settings:
+                    kwargs[key] = llm_settings[key]
+
         # Route to tool-calling or standard completion
         if tools:
             response: LLMResponse | LLMToolResponse = (

@@ -148,7 +148,13 @@ class APOfficerAgent(BaseAgent):
                     import json
                     parsed = json.loads(task_str)
                     if isinstance(parsed, dict):
-                        # Merge parsed JSON into payload
+                        # 1. If it's a wrapped request (like from the docs), flatten it
+                        if "taskPayload" in parsed and isinstance(parsed["taskPayload"], dict):
+                            # Move everything from taskPayload up
+                            inner = parsed.pop("taskPayload")
+                            parsed.update(inner)
+                        
+                        # 2. Merge parsed JSON into payload
                         task_payload.update({k: v for k, v in parsed.items() if k != "task"})
                     elif isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
                         # Use the first object in the list as the payload
@@ -331,10 +337,8 @@ class APOfficerAgent(BaseAgent):
         }
 
         status = outcome_result.get("outcome", "completed")
-        if status in ("escalate", "block"):
+        if status in ("escalate", "block", "hold"):
             result_status = "escalated"
-        elif status == "hold":
-            result_status = "completed"
         else:
             result_status = "completed"
 
@@ -513,7 +517,11 @@ class APOfficerAgent(BaseAgent):
         # Check bank details
         bank_match = None
         flags: list[str] = []
-        if inv_bank_details and matched_vendor.get("bank_details"):
+        
+        has_inv_bank = bool(inv_bank_details)
+        has_master_bank = bool(matched_vendor.get("bank_details"))
+
+        if has_inv_bank and has_master_bank:
             master_bank = matched_vendor["bank_details"]
             if isinstance(inv_bank_details, dict) and isinstance(master_bank, dict):
                 inv_iban = (inv_bank_details.get("iban") or "").strip().upper()
@@ -528,6 +536,9 @@ class APOfficerAgent(BaseAgent):
                 bank_match = str(inv_bank_details) == str(master_bank)
                 if not bank_match and fraud_policy.get("bank_detail_change_alert", True):
                     flags.append("bank_details_changed")
+        elif has_inv_bank and not has_master_bank:
+            # First time bank details provided for an approved vendor -- high risk event
+            flags.append("first_time_bank_details")
 
         return {
             "vendor_status": "approved",
@@ -545,7 +556,11 @@ class APOfficerAgent(BaseAgent):
                     else (
                         " WARNING: Bank details do not match vendor master."
                         if bank_match is False
-                        else ""
+                        else (
+                            " WARNING: Bank details provided for the first time for this vendor."
+                            if "first_time_bank_details" in flags
+                            else ""
+                        )
                     )
                 )
             ),
@@ -782,6 +797,14 @@ class APOfficerAgent(BaseAgent):
                 "Potential fraud risk."
             )
 
+        if "first_time_bank_details" in vendor_flags:
+            risk_score = max(risk_score, 0.75)
+            flags.append("first_time_bank_details")
+            reasons.append(
+                "Bank details provided for the first time for an approved vendor. "
+                "Verification required before first payment."
+            )
+
         # --- Evaluate PO matching ---
         po_match = match_result.get("match_result", "no_po")
 
@@ -842,6 +865,8 @@ class APOfficerAgent(BaseAgent):
         elif "blocked_vendor" in flags:
             outcome = "block"
         elif "bank_details_changed" in flags:
+            outcome = "escalate"
+        elif "first_time_bank_details" in flags:
             outcome = "escalate"
         elif "near_duplicate" in flags:
             outcome = "block"
@@ -963,7 +988,10 @@ class APOfficerAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        # Resolve policy for LLM settings
+        policy = self._resolve_policy(context)
+
+        llm_result = await self.call_llm(messages, agent_policy=policy)
 
         response_text = llm_result.get("content", "")
 
@@ -1106,7 +1134,7 @@ class APOfficerAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        llm_result = await self.call_llm(messages, agent_policy=policy)
 
         content = llm_result.get("content", "")
 
@@ -1165,6 +1193,12 @@ class APOfficerAgent(BaseAgent):
             section_override = overrides.get(section_key) or resolved.get(section_key)
             if section_override and isinstance(section_override, dict):
                 policy[section_key] = {**DEFAULT_POLICY[section_key], **section_override}
+
+        # Also include LLM config from resolved_config if present (multiple API selection)
+        if "llm" in resolved:
+            policy["llm"] = resolved["llm"]
+        elif "llm" in overrides:
+            policy["llm"] = overrides["llm"]
 
         return policy
 
