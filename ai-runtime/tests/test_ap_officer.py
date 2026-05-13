@@ -66,7 +66,7 @@ class TestAPOfficerAgent:
             context=context,
         )
 
-        assert result["status"] in ("completed", "failed")
+        assert result["status"] in ("completed", "failed", "escalated")
         assert "output" in result
 
     @pytest.mark.asyncio
@@ -115,7 +115,7 @@ class TestAPOfficerAgent:
 
         assert "output" in result
         # The agent should process without crashing even with potential duplicates
-        assert result["status"] in ("completed", "failed")
+        assert result["status"] in ("completed", "failed", "escalated")
 
     @pytest.mark.asyncio
     async def test_po_matching(self, mock_llm_gateway, mock_pii_redactor):
@@ -150,4 +150,4 @@ class TestAPOfficerAgent:
         )
 
         assert "output" in result
-        assert result["status"] in ("completed", "failed")
+        assert result["status"] in ("completed", "failed", "escalated")

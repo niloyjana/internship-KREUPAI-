@@ -371,7 +371,33 @@ class POMatcherTool(BaseTool):
 
         # Line item matching
         matched_items = 0
-        total_items = max(len(inv_items), 1)
+        inv_items = invoice.get("line_items", [])
+        po_items = po.get("line_items", [])
+        
+        # Fallback: If line items are missing on either side, compare total amounts
+        if not inv_items or not po_items:
+            inv_total = float(invoice.get("total_amount", 0))
+            po_total = float(po.get("total_amount", 0))
+            
+            if po_total > 0:
+                overall_price_var = abs(inv_total - po_total) / po_total * 100
+            else:
+                overall_price_var = 0.0 if inv_total == 0 else 100.0
+                
+            if overall_price_var > price_tol:
+                variances.append({
+                    "field": "total_amount",
+                    "invoice_value": inv_total,
+                    "po_value": po_total,
+                    "variance_percent": round(overall_price_var, 2),
+                    "variance_type": "out_of_tolerance",
+                })
+            else:
+                matched_items = 1 # Treat as one matched "unit"
+            
+            # Skip loop if we already compared totals due to missing items
+            total_items = 1
+            inv_items = [] 
 
         for idx, inv_item in enumerate(inv_items):
             po_item = po_items[idx] if idx < len(po_items) else None
@@ -464,7 +490,7 @@ class POMatcherTool(BaseTool):
             match_result = "full"
         elif vendor_match and overall_price_var <= price_tol and overall_qty_var <= qty_tol:
             match_result = "full"
-        elif vendor_match and (overall_price_var <= price_tol * 2 or overall_qty_var <= qty_tol * 2):
+        elif vendor_match and (overall_price_var <= price_tol * 2 and overall_qty_var <= qty_tol * 2):
             match_result = "partial"
         else:
             match_result = "mismatch"
