@@ -1,0 +1,1 @@
+{"executionId":"demo-completed-001","tenantId":"cmp19c9400000y70sbkv4dl2i","agentId":"ai-ap-officer","stepId":"step-1","taskPayload":{"type":"process_invoice","vendor_name":"Global Logistics Ltd","invoice_number":"INV-MEET-001","total_amount":1200.0,"currency":"USD","po_number":"PO-2024-882"}}

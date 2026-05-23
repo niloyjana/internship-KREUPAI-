@@ -32,6 +32,53 @@ from orchestrator.pii_redactor import PIIRedactor
 logger = logging.getLogger(__name__)
 
 
+def safe_parse_json(text: str) -> Optional[Any]:
+    """Robustly extract and parse JSON from a string, handling markdown blocks."""
+    if not text:
+        return None
+    text_clean = text.strip()
+    
+    # Handle markdown code blocks
+    if "```" in text_clean:
+        for block in text_clean.split("```"):
+            block = block.strip()
+            if block.startswith("json"):
+                block = block[4:].strip()
+            if (block.startswith("{") and block.endswith("}")) or (block.startswith("[") and block.endswith("]")):
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError:
+                    pass
+                    
+    # Try parsing direct clean string
+    if (text_clean.startswith("{") and text_clean.endswith("}")) or (text_clean.startswith("[") and text_clean.endswith("]")):
+        try:
+            return json.loads(text_clean)
+        except json.JSONDecodeError:
+            pass
+            
+    # Try finding the first '{' and last '}'
+    first_idx = text_clean.find("{")
+    last_idx = text_clean.rfind("}")
+    if first_idx != -1 and last_idx != -1 and last_idx > first_idx:
+        try:
+            return json.loads(text_clean[first_idx:last_idx+1])
+        except json.JSONDecodeError:
+            pass
+            
+    # Try finding the first '[' and last ']'
+    first_arr = text_clean.find("[")
+    last_arr = text_clean.rfind("]")
+    if first_arr != -1 and last_arr != -1 and last_arr > first_arr:
+        try:
+            return json.loads(text_clean[first_arr:last_arr+1])
+        except json.JSONDecodeError:
+            pass
+            
+    return None
+
+
+
 # ---------------------------------------------------------------------------
 # Default policy configuration
 # ---------------------------------------------------------------------------
@@ -76,9 +123,9 @@ DEFAULT_POLICY: dict[str, Any] = {
     },
     "coverage_targets": {
         "unit_test_coverage_pct": 80,
-        "integration_test_coverage_pct": 70,
-        "e2e_test_coverage_pct": 60,
-        "overall_coverage_pct": 75,
+        "integration_test_coverage_pct": 75,
+        "e2e_test_coverage_pct": 70,
+        "overall_coverage_pct": 80,
     },
     "regression_window": {
         "builds_to_compare": 5,
@@ -180,6 +227,27 @@ class QACoordinatorAgent(BaseAgent):
         Returns:
             Standardized result dict with status, output, tokensUsed, costUsd.
         """
+        # Auto-parse JSON string from 'task' field if it exists (for Portal UI support)
+        if "task" in task_payload and isinstance(task_payload["task"], str):
+            task_str = task_payload["task"].strip()
+            parsed = safe_parse_json(task_str)
+            if parsed is not None:
+                try:
+                    if isinstance(parsed, dict):
+                        # 1. If it's a wrapped request, flatten it
+                        if "taskPayload" in parsed and isinstance(parsed["taskPayload"], dict):
+                            inner = parsed.pop("taskPayload")
+                            parsed.update(inner)
+                        
+                        # 2. Merge parsed JSON into payload
+                        task_payload.update({k: v for k, v in parsed.items() if k != "task"})
+                    elif isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+                        # Use the first object in the list as the payload
+                        task_payload.update({k: v for k, v in parsed[0].items() if k != "task"})
+                    logger.info("Successfully parsed 'task' JSON string for QA Agent")
+                except Exception as exc:
+                    logger.warning("Failed to parse 'task' JSON string: %s", exc)
+
         task_type = task_payload.get(
             "task_type", task_payload.get("type", "handle_inquiry")
         )
@@ -332,7 +400,7 @@ class QACoordinatorAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        llm_result = await self.call_llm(messages, agent_policy=policy)
         content = llm_result.get("content", "")
         tokens_used = llm_result.get("tokens_used", 0)
         cost_usd = llm_result.get("cost_usd", 0.0)
@@ -342,15 +410,12 @@ class QACoordinatorAgent(BaseAgent):
         follow_up_needed = False
         follow_up_questions: list[str] = []
 
-        if content.startswith("{"):
-            try:
-                parsed = json.loads(content)
-                response_text = parsed.get("response", content)
-                confidence = parsed.get("confidence", 0.8)
-                follow_up_needed = parsed.get("follow_up_needed", False)
-                follow_up_questions = parsed.get("follow_up_questions", [])
-            except json.JSONDecodeError:
-                pass
+        parsed = safe_parse_json(content)
+        if isinstance(parsed, dict):
+            response_text = parsed.get("response", content)
+            confidence = parsed.get("confidence", 0.8)
+            follow_up_needed = parsed.get("follow_up_needed", False)
+            follow_up_questions = parsed.get("follow_up_questions", [])
 
         if not response_text or response_text.startswith("{"):
             response_text = (
@@ -377,6 +442,8 @@ class QACoordinatorAgent(BaseAgent):
             status="completed",
             output=output,
             tokens_used=tokens_used,
+            input_tokens=llm_result.get("input_tokens", 0),
+            output_tokens=llm_result.get("output_tokens", 0),
             cost_usd=cost_usd,
             next_action="follow_up" if follow_up_needed else None,
         )
@@ -425,6 +492,11 @@ class QACoordinatorAgent(BaseAgent):
         test_plan_result = await self._step_generate_test_plan(
             task_payload, context, policy
         )
+        audit_events.append(self._audit_event(
+            "qa.test_plan.generated", tenant_id, execution_id,
+            plan_id=test_plan_result.get("plan_id"),
+            total_cases=test_plan_result.get("total_test_cases"),
+        ))
 
         # Step 2: Defect Classification
         defect_result = await self._step_classify_defects(
@@ -440,6 +512,12 @@ class QACoordinatorAgent(BaseAgent):
         regression_result = await self._step_track_regressions(
             task_payload, context, policy
         )
+        audit_events.append(self._audit_event(
+            "qa.regression.tracked", tenant_id, execution_id,
+            build_id=task_payload.get("build_id"),
+            pass_rate=regression_result.get("pass_rate"),
+            regression_count=regression_result.get("regression_count"),
+        ))
 
         # Check for duplicate defects in classifications
         classifications = defect_result.get("classifications", [])
@@ -457,6 +535,12 @@ class QACoordinatorAgent(BaseAgent):
         )
         total_tokens += report_result.get("tokens_used", 0)
         total_cost += report_result.get("cost_usd", 0.0)
+
+        audit_events.append(self._audit_event(
+            "qa.report.generated", tenant_id, execution_id,
+            build_id=task_payload.get("build_id"),
+            quality_status=regression_result.get("quality_status"),
+        ))
 
         duration_ms = int((time.time() - start_time) * 1000)
 
@@ -522,6 +606,8 @@ class QACoordinatorAgent(BaseAgent):
             status=result_status,
             output=output,
             tokens_used=total_tokens,
+            input_tokens=report_result.get("input_tokens", 0),
+            output_tokens=report_result.get("output_tokens", 0),
             cost_usd=total_cost,
             next_action=next_action,
             metadata={
@@ -574,7 +660,27 @@ class QACoordinatorAgent(BaseAgent):
         Returns:
             Dict with test plan details including cases and coverage.
         """
-        requirements = context.get("requirements", task_payload.get("requirements", []))
+        raw_reqs = context.get("requirements", task_payload.get("requirements", []))
+        requirements = []
+        for r in raw_reqs:
+            if isinstance(r, str):
+                req_id = f"REQ-{len(requirements)+1:03d}"
+                req_title = r
+                if ":" in r:
+                    parts = r.split(":", 1)
+                    prefix = parts[0].strip()
+                    if prefix.startswith("REQ-") or prefix.replace(" ", "").isalnum():
+                        req_id = prefix
+                        req_title = parts[1].strip()
+                requirements.append({
+                    "id": req_id,
+                    "title": req_title,
+                    "description": r,
+                    "priority": "medium"
+                })
+            elif isinstance(r, dict):
+                requirements.append(r)
+        
         feature_name = task_payload.get("feature_name", "Current Sprint")
         test_types = task_payload.get(
             "test_types", ["unit", "integration", "e2e"]
@@ -863,18 +969,15 @@ class QACoordinatorAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        llm_result = await self.call_llm(messages, agent_policy=policy)
         content = llm_result.get("content", "")
 
-        if content.startswith("{"):
-            try:
-                parsed = json.loads(content)
-                content = parsed.get("report", parsed.get("summary", ""))
-            except json.JSONDecodeError:
-                pass
+        parsed = safe_parse_json(content)
+        if isinstance(parsed, dict):
+            content = parsed.get("report", parsed.get("summary", ""))
 
         # Fallback report
-        if not content or content.startswith("{"):
+        if not content or safe_parse_json(content) is not None:
             content = self._generate_fallback_quality_report(
                 task_payload, test_plan_result, defect_result, regression_result
             )
@@ -882,6 +985,8 @@ class QACoordinatorAgent(BaseAgent):
         return {
             "report": content,
             "tokens_used": llm_result.get("tokens_used", 0),
+            "input_tokens": llm_result.get("input_tokens", 0),
+            "output_tokens": llm_result.get("output_tokens", 0),
             "cost_usd": llm_result.get("cost_usd", 0.0),
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -989,15 +1094,15 @@ class QACoordinatorAgent(BaseAgent):
 
         if p1_count > max_p1:
             blockers.append(
-                f"{p1_count} P1 defect(s) exceed maximum ({max_p1})."
+                f"[STRICT GATE] {p1_count} P1 defect(s) exceed maximum ({max_p1})."
             )
         if p2_count > max_p2:
             blockers.append(
-                f"{p2_count} P2 defect(s) exceed maximum ({max_p2})."
+                f"[STRICT GATE] {p2_count} P2 defect(s) exceed maximum ({max_p2})."
             )
         if pass_rate < release_pass_rate:
             blockers.append(
-                f"Pass rate {pass_rate}% is below release threshold "
+                f"[STRICT GATE] Pass rate {pass_rate}% is below release threshold "
                 f"({release_pass_rate}%)."
             )
 
@@ -1088,6 +1193,8 @@ class QACoordinatorAgent(BaseAgent):
                 "test_plan_insight": llm_result.get("content", ""),
             },
             tokens_used=llm_result.get("tokens_used", 0),
+            input_tokens=llm_result.get("input_tokens", 0),
+            output_tokens=llm_result.get("output_tokens", 0),
             cost_usd=llm_result.get("cost_usd", 0.0),
         )
 
@@ -1220,6 +1327,8 @@ class QACoordinatorAgent(BaseAgent):
                 "regression_insight": llm_result.get("content", ""),
             },
             tokens_used=llm_result.get("tokens_used", 0),
+            input_tokens=llm_result.get("input_tokens", 0),
+            output_tokens=llm_result.get("output_tokens", 0),
             cost_usd=llm_result.get("cost_usd", 0.0),
             next_action=(
                 "fix_regressions"
@@ -1292,6 +1401,8 @@ class QACoordinatorAgent(BaseAgent):
                 "test_insight": llm_result.get("content", ""),
             },
             tokens_used=llm_result.get("tokens_used", 0),
+            input_tokens=llm_result.get("input_tokens", 0),
+            output_tokens=llm_result.get("output_tokens", 0),
             cost_usd=llm_result.get("cost_usd", 0.0),
         )
 
@@ -1360,15 +1471,12 @@ class QACoordinatorAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        llm_result = await self.call_llm(messages, agent_policy=policy)
         content = llm_result.get("content", "")
 
-        if content.startswith("{"):
-            try:
-                parsed = json.loads(content)
-                content = parsed.get("insight", parsed.get("summary", ""))
-            except json.JSONDecodeError:
-                pass
+        parsed = safe_parse_json(content)
+        if isinstance(parsed, dict):
+            content = parsed.get("insight", parsed.get("summary", ""))
 
         if not content or content.startswith("{"):
             total = test_plan_data.get("total_test_cases", 0)
@@ -1416,15 +1524,12 @@ class QACoordinatorAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        llm_result = await self.call_llm(messages, agent_policy=policy)
         content = llm_result.get("content", "")
 
-        if content.startswith("{"):
-            try:
-                parsed = json.loads(content)
-                content = parsed.get("insight", parsed.get("summary", ""))
-            except json.JSONDecodeError:
-                pass
+        parsed = safe_parse_json(content)
+        if isinstance(parsed, dict):
+            content = parsed.get("insight", parsed.get("summary", ""))
 
         if not content or content.startswith("{"):
             rate = regression_data.get("pass_rate", 0)
@@ -1470,15 +1575,12 @@ class QACoordinatorAgent(BaseAgent):
             },
         ]
 
-        llm_result = await self.call_llm(messages)
+        llm_result = await self.call_llm(messages, agent_policy=policy)
         content = llm_result.get("content", "")
 
-        if content.startswith("{"):
-            try:
-                parsed = json.loads(content)
-                content = parsed.get("insight", parsed.get("summary", ""))
-            except json.JSONDecodeError:
-                pass
+        parsed = safe_parse_json(content)
+        if isinstance(parsed, dict):
+            content = parsed.get("insight", parsed.get("summary", ""))
 
         if not content or content.startswith("{"):
             content = (
@@ -1512,6 +1614,12 @@ class QACoordinatorAgent(BaseAgent):
             section_override = overrides.get(section_key) or resolved.get(section_key)
             if section_override and isinstance(section_override, dict):
                 policy[section_key] = {**DEFAULT_POLICY[section_key], **section_override}
+
+        # Also include LLM config from resolved_config if present (multiple API selection)
+        if "llm" in resolved:
+            policy["llm"] = resolved["llm"]
+        elif "llm" in overrides:
+            policy["llm"] = overrides["llm"]
 
         return policy
 

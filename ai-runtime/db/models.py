@@ -251,3 +251,54 @@ class PurchaseRequisition(Base):
     estimated_amount: Mapped[float] = mapped_column(Float, name="estimatedAmount", nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), name="createdAt", server_default=func.now())
+
+
+class QaTestResult(Base):
+    """Business model for QA test results (synced from main DB)."""
+
+    __tablename__ = "qa_test_results"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), name="tenantId", nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, name="durationMs", nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), name="createdAt", server_default=func.now())
+
+
+class QaDefect(Base):
+    """Business model for QA defects (synced from main DB)."""
+
+    __tablename__ = "qa_defects"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), name="tenantId", nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    severity: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), name="createdAt", server_default=func.now())
+
+
+class QaBaselineResult(Base):
+    """Business model for QA baseline results (synced from main DB)."""
+
+    __tablename__ = "qa_baseline_results"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), name="tenantId", nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), name="createdAt", server_default=func.now())
+
+
+class QaRequirement(Base):
+    """Business model for QA requirements (synced from main DB)."""
+
+    __tablename__ = "qa_requirements"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), name="tenantId", nullable=False, index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), name="createdAt", server_default=func.now())
+

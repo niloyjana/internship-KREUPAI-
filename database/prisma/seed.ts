@@ -708,7 +708,73 @@ const legalContractAnalystDefaultPolicy = {
   },
 };
 
+const qaCoordinatorDefaultPolicy = {
+  identity: { displayName: 'AI QA Coordinator', persona: 'QA Coordinator Agent' },
+  communication: {
+    defaultLanguage: 'en',
+    supportedLanguages: ['en'],
+    tone: 'formal',
+    requireHumanReviewBeforeSend: false,
+    includeUnsubscribeLink: false,
+  },
+  escalation: {
+    confidenceThreshold: 0.7,
+    maxTaskDurationMinutes: 120,
+    vipEntityAlwaysHuman: false,
+    escalationRouting: {
+      default: { assignTeam: 'qa-team', notifyChannels: ['email', 'slack'], slaMinutes: 60 },
+    },
+  },
+  dataControls: {
+    piiRedactionEnabled: true,
+    dataRetentionDays: 365,
+    crossTenantIsolationMode: 'strict',
+    auditEveryAction: true,
+  },
+  sla: {
+    firstResponseMinutes: 15,
+    resolutionHours: 24,
+    businessHoursOnly: true,
+    slaBreachNotify: ['qa-manager@tenant.com'],
+  },
+  qaPolicy: {
+    severity_definitions: {
+        "P1": { "auto_escalate": true },
+        "P2": { "auto_escalate": false },
+        "P3": { "auto_escalate": false },
+        "P4": { "auto_escalate": false }
+    },
+    pass_fail_thresholds: {
+        "minimum_pass_rate": 95.0,
+        "critical_pass_rate": 90.0,
+        "release_blocker_pass_rate": 98.0,
+        "max_p1_defects_for_release": 0,
+        "max_p2_defects_for_release": 2
+    }
+  },
+};
+
 const agentDefinitions = [
+  // Delivery & Operations
+  {
+    agentId: 'ai-qa-coordinator',
+    name: 'AI QA Coordinator',
+    department: AgentDepartment.DELIVERY_OPS,
+    description: 'Manages quality assurance processes, generates test plans, tracks defects and regressions',
+    version: '1.0.0',
+    monthlyPricingUsd: 250,
+    pricingTier: 'standard',
+    capabilities: [
+      'test_plan_generation',
+      'defect_classification',
+      'regression_tracking',
+      'quality_reporting',
+      'release_readiness_assessment'
+    ],
+    requiredIntegrations: ['JIRA', 'GITHUB'],
+    optionalIntegrations: ['SLACK'],
+    defaultPolicyJson: qaCoordinatorDefaultPolicy,
+  },
   // Customer Operations
   {
     agentId: 'ai-customer-support-agent',

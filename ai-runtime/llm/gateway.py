@@ -273,7 +273,12 @@ class LLMGateway:
                 continue
 
             breaker = self._get_provider_breaker(p)
-            resolved_model = model or self.DEFAULT_MODELS.get(p, "gpt-4o")
+            # If failing over to a different provider than originally requested,
+            # use the default model for the new provider.
+            if provider and p != provider:
+                resolved_model = self.DEFAULT_MODELS.get(p, "gpt-4o")
+            else:
+                resolved_model = model or self.DEFAULT_MODELS.get(p, "gpt-4o")
 
             # Check if the circuit breaker is blocking this provider
             try:
@@ -328,7 +333,12 @@ class LLMGateway:
                 continue
 
             breaker = self._get_provider_breaker(p)
-            resolved_model = model or self.DEFAULT_MODELS.get(p, "gpt-4o")
+            # If failing over to a different provider than originally requested,
+            # use the default model for the new provider.
+            if provider and p != provider:
+                resolved_model = self.DEFAULT_MODELS.get(p, "gpt-4o")
+            else:
+                resolved_model = model or self.DEFAULT_MODELS.get(p, "gpt-4o")
 
             # Check if the circuit breaker is blocking this provider
             try:

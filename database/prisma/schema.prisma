@@ -245,6 +245,10 @@ model Tenant {
   escalations      EscalationTicket[]
   humanTasks       HumanTask[]
   configTemplates  ConfigTemplate[]
+  qaTestResults    QaTestResult[]
+  qaDefects        QaDefect[]
+  qaBaselineResults QaBaselineResult[]
+  qaRequirements   QaRequirement[]
 
   @@index([slug])
   @@index([status])
@@ -1409,3 +1413,62 @@ model DlqEntry {
   @@index([topic, status])
   @@map("dlq_entries")
 }
+
+// ============================================================
+// SECTION 16: DOMAIN MODELS — QUALITY ASSURANCE (QA)
+// ============================================================
+
+model QaTestResult {
+  id         String   @id @default(cuid())
+  tenantId   String
+  name       String
+  status     String   // "passed" | "failed"
+  durationMs Int
+  error      String?
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("qa_test_results")
+}
+
+model QaDefect {
+  id         String   @id @default(cuid())
+  tenantId   String
+  title      String
+  status     String   // "open" | "resolved"
+  severity   String   // "P1" | "P2" | "P3" | "P4"
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("qa_defects")
+}
+
+model QaBaselineResult {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  status    String
+  createdAt DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("qa_baseline_results")
+}
+
+model QaRequirement {
+  id        String   @id @default(cuid())
+  tenantId  String
+  text      String
+  createdAt DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("qa_requirements")
+}
+

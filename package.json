@@ -4,7 +4,7 @@
   "private": true,
   "description": "AI Digital Workforce Platform — Monorepo",
   "scripts": {
-    "dev": "turbo run dev --concurrency 15",
+    "dev": "turbo run dev --concurrency 11",
     "build": "turbo run build",
     "test": "turbo run test",
     "prepare": "husky",
@@ -15,6 +15,8 @@
     "db:migrate": "pnpm --filter @adwp/database migrate:dev",
     "db:migrate:deploy": "pnpm --filter @adwp/database migrate:deploy",
     "db:seed": "pnpm --filter @adwp/database seed",
+    "db:seed:ap": "pnpm --filter @adwp/database seed:ap",
+    "db:seed:qa": "pnpm --filter @adwp/database seed:qa",
     "db:studio": "pnpm --filter @adwp/database studio",
     "clean": "turbo run clean && rm -rf node_modules"
   },

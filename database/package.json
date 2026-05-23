@@ -11,6 +11,8 @@
     "migrate:deploy": "prisma migrate deploy",
     "migrate:reset": "prisma migrate reset",
     "seed": "ts-node prisma/seed.ts",
+    "seed:ap": "ts-node prisma/seed-ap.ts",
+    "seed:qa": "ts-node prisma/seed-qa.ts",
     "studio": "prisma studio",
     "build": "tsc",
     "clean": "rm -rf dist"

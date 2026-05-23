@@ -1,52 +1,44 @@
+
 import asyncio
 import os
-import sys
 from dotenv import load_dotenv
+from sqlalchemy import select, text
 
-# Add the current directory to sys.path
-sys.path.append(os.getcwd())
-
-# Load environment variables
-load_dotenv()
+# Load env from root
+load_dotenv(os.path.join("e:\\cv\\KreupAI.AISA-main", ".env"))
 
 from db.database import init_db, get_session
-from sqlalchemy import text
+from db.models import FinanceInvoice, PurchaseRequisition
 
 async def check_data():
-    # Initialize DB
-    ready = await init_db()
-    if not ready:
-        print("DB not ready")
-        return
-
+    print(f"DATABASE_URL: {os.environ.get('DATABASE_URL')}")
+    await init_db()
     session = get_session()
     if not session:
-        print("Could not create session")
+        print("No session")
         return
 
-    async with session:
-        # Check POs
+    try:
+        # Check Tenants (raw SQL)
         try:
-            print("\n--- Purchase Orders ---")
-            # Use double quotes for case-sensitive columns in PostgreSQL
-            query = 'SELECT "prNumber", "estimatedAmount", status FROM purchase_requisitions LIMIT 5'
-            res = await session.execute(text(query))
-            rows = res.all()
-            for r in rows:
-                print(f"PO: {r.prNumber}, Amount: {r.estimatedAmount}, Status: {r.status}")
+            res = await session.execute(text("SELECT id, name, slug FROM tenants"))
+            tenants = res.fetchall()
+            print(f"Tenants: {tenants}")
         except Exception as e:
-            print(f"Error fetching POs: {e}")
+            print(f"Could not fetch tenants: {e}")
 
-        # Check Finance Invoices (Vendors are derived from here)
-        try:
-            print("\n--- Recent Invoices ---")
-            query = 'SELECT "vendorName", "invoiceNumber", "totalAmount" FROM finance_invoices LIMIT 5'
-            res = await session.execute(text(query))
-            rows = res.all()
-            for r in rows:
-                print(f"Vendor: {r.vendorName}, Invoice: {r.invoiceNumber}, Amount: {r.totalAmount}")
-        except Exception as e:
-            print(f"Error fetching invoices: {e}")
+        # Check POs
+        res = await session.execute(select(PurchaseRequisition))
+        pos = res.scalars().all()
+        print(f"POs: {[ (p.pr_number, p.estimated_amount, p.status) for p in pos]}")
+
+        # Check Invoices
+        res = await session.execute(select(FinanceInvoice))
+        invoices = res.scalars().all()
+        print(f"Invoices: {[ (i.invoice_number, i.vendor_name, i.total_amount) for i in invoices]}")
+
+    finally:
+        await session.close()
 
 if __name__ == "__main__":
     asyncio.run(check_data())

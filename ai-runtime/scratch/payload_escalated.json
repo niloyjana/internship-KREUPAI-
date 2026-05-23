@@ -1,0 +1,1 @@
+{"executionId":"demo-escalated-001","tenantId":"cmp19c9400000y70sbkv4dl2i","agentId":"ai-ap-officer","stepId":"step-1","taskPayload":{"type":"process_invoice","vendor_name":"Unknown Vendor Inc","invoice_number":"INV-MEET-002","total_amount":5500.0,"currency":"USD","po_number":"PO-NONE"}}

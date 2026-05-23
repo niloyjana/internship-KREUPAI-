@@ -113,9 +113,14 @@ async def load_ap_context(tenant_id: str, task_payload: dict[str, Any]) -> dict[
         ]
 
         # 3. Load Vendor Master
-        # In this simplified schema, we'll derive vendors from recent invoices
-        # In production, this would be a dedicated table.
-        vendors = {inv.vendor_name for inv in recent}
+        # In this simplified schema, we'll derive vendors from all historical invoices
+        # under the tenant so that approved vendors are not lost after 90 days.
+        stmt_vendors = select(FinanceInvoice.vendor_name).where(
+            FinanceInvoice.tenant_id == tenant_id
+        ).distinct()
+        res_vendors = await session.execute(stmt_vendors)
+        vendors = {name for name in res_vendors.scalars().all() if name}
+
         context["vendor_master"] = [
             {
                 "name": name,

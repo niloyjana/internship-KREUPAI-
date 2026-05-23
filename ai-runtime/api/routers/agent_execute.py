@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from db.ap_context_loader import load_ap_context
+from db.qa_context_loader import load_qa_context
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,7 @@ async def execute_agent(request: AgentExecuteRequest):
     start_time = time.time()
 
     # Build execution context
-    tenant_id = request.tenantId or "cmostem4m0000y76cglzikowk" # Default to Acme Corp ID
+    tenant_id = request.tenantId or "cmp19c9400000y70sbkv4dl2i" # Default to seeded Acme Corp tenant
     context = {
         "tenantId": tenant_id,
         "executionId": request.executionId,
@@ -155,6 +156,14 @@ async def execute_agent(request: AgentExecuteRequest):
             context.update(ap_context)
         except Exception as exc:
             logger.warning("Auto-hydration failed for ai-ap-officer: %s", exc)
+
+    # Auto-Hydration for QA Coordinator
+    if request.agentId == "ai-qa-coordinator":
+        try:
+            qa_context = await load_qa_context(tenant_id, request.taskPayload)
+            context.update(qa_context)
+        except Exception as exc:
+            logger.warning("Auto-hydration failed for ai-qa-coordinator: %s", exc)
 
     # If the orchestration engine is configured, use it
     if _engine is not None:
