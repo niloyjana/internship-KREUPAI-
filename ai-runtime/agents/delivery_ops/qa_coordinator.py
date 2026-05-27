@@ -260,7 +260,7 @@ class QACoordinatorAgent(BaseAgent):
             return await self._handle_classify_defect(task_payload, context)
         elif task_type in ("analyze_coverage", "quality_report"):
             return await self._handle_quality_report_workflow(task_payload, context)
-        elif task_type == "track_regression":
+        elif task_type in ("track_regression", "track_regressions"):
             return await self._handle_track_regression(task_payload, context)
         elif task_type == "test_query":
             return await self._handle_test_query(task_payload, context)
@@ -488,17 +488,7 @@ class QACoordinatorAgent(BaseAgent):
         # Resolve policy
         policy = self._resolve_policy(context)
 
-        # Step 1: Test Plan Generation / Review
-        test_plan_result = await self._step_generate_test_plan(
-            task_payload, context, policy
-        )
-        audit_events.append(self._audit_event(
-            "qa.test_plan.generated", tenant_id, execution_id,
-            plan_id=test_plan_result.get("plan_id"),
-            total_cases=test_plan_result.get("total_test_cases"),
-        ))
-
-        # Step 2: Defect Classification
+        # Step 1: Defect Triage and Duplicate Detection
         defect_result = await self._step_classify_defects(
             task_payload, context, policy
         )
@@ -506,6 +496,25 @@ class QACoordinatorAgent(BaseAgent):
             "qa.defect.triaged", tenant_id, execution_id,
             total_classified=defect_result.get("total_classified", 0),
             p1_count=defect_result.get("p1_count", 0),
+        ))
+
+        # Check for duplicate defects early as part of triage
+        classifications = defect_result.get("classifications", [])
+        duplicates = [c for c in classifications if c.get("is_duplicate", False)]
+        if duplicates:
+            audit_events.append(self._audit_event(
+                "qa.duplicate.detected", tenant_id, execution_id,
+                duplicate_count=len(duplicates),
+            ))
+
+        # Step 2: Test Case Recommendation (Test Plan Generation)
+        test_plan_result = await self._step_generate_test_plan(
+            task_payload, context, policy
+        )
+        audit_events.append(self._audit_event(
+            "qa.test_plan.generated", tenant_id, execution_id,
+            plan_id=test_plan_result.get("plan_id"),
+            total_cases=test_plan_result.get("total_test_cases"),
         ))
 
         # Step 3: Regression Tracking
@@ -518,15 +527,6 @@ class QACoordinatorAgent(BaseAgent):
             pass_rate=regression_result.get("pass_rate"),
             regression_count=regression_result.get("regression_count"),
         ))
-
-        # Check for duplicate defects in classifications
-        classifications = defect_result.get("classifications", [])
-        duplicates = [c for c in classifications if c.get("is_duplicate", False)]
-        if duplicates:
-            audit_events.append(self._audit_event(
-                "qa.duplicate.detected", tenant_id, execution_id,
-                duplicate_count=len(duplicates),
-            ))
 
         # Step 4: Quality Reporting
         report_result = await self._step_generate_quality_report(
@@ -688,14 +688,26 @@ class QACoordinatorAgent(BaseAgent):
         coverage_targets = policy.get("coverage_targets", {})
         coverage_target = coverage_targets.get("overall_coverage_pct", 75)
 
-        result = await self._test_plan_generator.execute({
-            "requirements": requirements,
-            "feature_name": feature_name,
-            "test_types": test_types,
-            "coverage_target": coverage_target,
-        })
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI Test Plan Generator. Given these requirements, generate a comprehensive test plan. "
+                    "Respond ONLY with valid JSON containing: 'plan_id' (string), 'feature_name' (string), "
+                    "'total_test_cases' (int), 'test_types_included' (list of strings), 'estimated_total_hours' (int), "
+                    "'requirements_covered' (int), 'test_cases' (array of objects with 'id', 'title', 'type', 'priority')."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Requirements:\n{json.dumps(requirements, indent=2)}\nFeature Name: {feature_name}\nTarget Test Types: {json.dumps(test_types)}"
+            }
+        ]
 
-        if not result.get("success"):
+        llm_result = await self.call_llm(messages, agent_policy=policy)
+        data = safe_parse_json(llm_result.get("content", "")) or {}
+
+        if not data or "test_cases" not in data:
             return {
                 "plan_id": "",
                 "total_test_cases": 0,
@@ -703,21 +715,19 @@ class QACoordinatorAgent(BaseAgent):
                 "estimated_total_hours": 0,
                 "test_cases": [],
                 "requirements_covered": 0,
-                "details": f"Test plan generation failed: {result.get('error')}",
+                "details": "Test plan generation failed to produce valid JSON.",
             }
 
-        data = result["data"]
-
         return {
-            "plan_id": data.get("plan_id", ""),
+            "plan_id": data.get("plan_id", f"TP-{uuid.uuid4().hex[:6]}"),
             "feature_name": data.get("feature_name", feature_name),
-            "total_test_cases": data.get("total_test_cases", 0),
+            "total_test_cases": data.get("total_test_cases", len(data.get("test_cases", []))),
             "test_types_included": data.get("test_types_included", test_types),
             "estimated_total_hours": data.get("estimated_total_hours", 0),
             "test_cases": data.get("test_cases", []),
-            "requirements_covered": data.get("requirements_covered", 0),
+            "requirements_covered": data.get("requirements_covered", len(requirements)),
             "coverage_target": coverage_target,
-            "details": data.get("summary", "Test plan generated."),
+            "details": "Test plan generated dynamically via LLM.",
         }
 
     # ------------------------------------------------------------------
@@ -756,49 +766,65 @@ class QACoordinatorAgent(BaseAgent):
                 "details": "No defects provided for classification.",
             }
 
-        result = await self._defect_classifier.execute({
-            "defects": defects,
-        })
+        severity_defs = policy.get("severity_definitions", {})
 
-        if not result.get("success"):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI Defect Classifier. Analyze the provided defects and classify them based on severity (P1-P4), "
+                    "category, and estimate fix hours. Also identify any obvious duplicates. "
+                    "Respond ONLY with valid JSON containing a 'classifications' array. "
+                    "Each item must have: 'defect_id', 'title', 'severity' (P1, P2, P3, P4), 'category', 'estimated_fix_hours' (int), and 'is_duplicate' (boolean)."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Defects to classify:\n{json.dumps(defects, indent=2)}\n\nSeverity Policy:\n{json.dumps(severity_defs, indent=2)}"
+            }
+        ]
+
+        llm_result = await self.call_llm(messages, agent_policy=policy)
+        data = safe_parse_json(llm_result.get("content", "")) or {}
+        classifications = data.get("classifications", [])
+
+        if not classifications:
             return {
                 "total_classified": 0,
                 "severity_distribution": {},
                 "classifications": [],
                 "p1_defects": [],
                 "needs_escalation": False,
-                "details": f"Defect classification failed: {result.get('error')}",
+                "details": "Defect classification failed to produce valid JSON.",
             }
 
-        data = result["data"]
-        classifications = data.get("classifications", [])
+        # Calculate distributions
+        severity_distribution = {}
+        p1_defects = []
+        total_fix_hours = 0
 
-        # Extract P1 defects for escalation
-        p1_defects = [
-            c for c in classifications if c.get("severity") == "P1"
-        ]
+        for c in classifications:
+            sev = c.get("severity", "P4")
+            severity_distribution[sev] = severity_distribution.get(sev, 0) + 1
+            total_fix_hours += c.get("estimated_fix_hours", 0)
+            if sev == "P1":
+                p1_defects.append(c)
 
         # Check if auto-escalation is needed
-        severity_defs = policy.get("severity_definitions", {})
         needs_escalation = (
             len(p1_defects) > 0
             and severity_defs.get("P1", {}).get("auto_escalate", True)
         )
 
-        # Calculate estimated fix effort
-        total_fix_hours = sum(
-            c.get("estimated_fix_hours", 0) for c in classifications
-        )
-
         return {
-            "total_classified": data.get("total_classified", 0),
-            "severity_distribution": data.get("severity_distribution", {}),
+            "total_classified": len(classifications),
+            "severity_distribution": severity_distribution,
             "classifications": classifications,
             "p1_defects": p1_defects,
             "p1_count": len(p1_defects),
             "needs_escalation": needs_escalation,
             "total_estimated_fix_hours": total_fix_hours,
-            "details": data.get("summary", "Defect classification completed."),
+            "details": "Defect classification completed via LLM inference.",
         }
 
     # ------------------------------------------------------------------
@@ -1319,8 +1345,9 @@ class QACoordinatorAgent(BaseAgent):
         pass_rate = data.get("pass_rate", 0)
         min_rate = thresholds.get("minimum_pass_rate", 95.0)
 
+        has_regressions = data.get("regression_count", 0) > 0
         return self.format_result(
-            status="completed",
+            status="escalated" if has_regressions else "completed",
             output={
                 **data,
                 "meets_pass_rate_threshold": pass_rate >= min_rate,

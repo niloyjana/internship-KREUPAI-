@@ -149,5 +149,7 @@ async def load_qa_context(tenant_id: str, task_payload: dict[str, Any]) -> dict[
         context["defects"] = task_payload["defects"]
     if "baseline_results" in task_payload:
         context["baseline_results"] = task_payload["baseline_results"]
+    if "requirements" in task_payload:
+        context["requirements"] = task_payload["requirements"]
     
     return context

@@ -1533,8 +1533,16 @@ class TestPlanGeneratorTool(BaseTool):
 
         if requirements:
             for req in requirements:
-                req_id = req.get("id", f"REQ-{case_num:03d}")
-                req_title = req.get("title", req.get("description", ""))
+                if isinstance(req, str):
+                    req_id = f"REQ-{case_num:03d}"
+                    req_title = req
+                    req_priority = "medium"
+                elif isinstance(req, dict):
+                    req_id = req.get("id") or req.get("requirement_id") or f"REQ-{case_num:03d}"
+                    req_title = req.get("title") or req.get("description") or ""
+                    req_priority = req.get("priority", "medium")
+                else:
+                    continue
 
                 for test_type in test_types:
                     tc = {
@@ -1542,7 +1550,7 @@ class TestPlanGeneratorTool(BaseTool):
                         "requirement_id": req_id,
                         "type": test_type,
                         "title": f"[{test_type.upper()}] Verify {req_title}",
-                        "priority": req.get("priority", "medium"),
+                        "priority": req_priority,
                         "steps": [
                             f"Set up {test_type} test environment.",
                             f"Configure test data for {req_title}.",
@@ -1724,15 +1732,23 @@ class DefectClassifierTool(BaseTool):
         result = self._classify_single(params)
         return self.success_result(result)
 
-    def _classify_single(self, defect: dict[str, Any]) -> dict[str, Any]:
+    def _classify_single(self, defect: Any) -> dict[str, Any]:
         """Classify a single defect.
 
         Args:
-            defect: Defect data dict.
+            defect: Defect data dict or string.
 
         Returns:
             Classification result dict.
         """
+        if isinstance(defect, str):
+            defect = {
+                "title": defect,
+                "description": defect,
+            }
+        elif not isinstance(defect, dict):
+            defect = {}
+
         defect_id = defect.get("defect_id") or defect.get("id") or (
             f"DEF-{uuid.uuid4().hex[:8].upper()}"
         )
@@ -1931,8 +1947,15 @@ class RegressionTrackerTool(BaseTool):
         # Compare current against baseline
         baseline_map: dict[str, str] = {}
         for br in baseline_results:
-            tc_id = br.get("test_case_id") or br.get("id", "")
-            baseline_map[tc_id] = br.get("status", "unknown")
+            if isinstance(br, str):
+                tc_id = br
+                status = "passed"
+            elif isinstance(br, dict):
+                tc_id = br.get("test_case_id") or br.get("id", "")
+                status = br.get("status", "unknown")
+            else:
+                continue
+            baseline_map[tc_id] = status
 
         regressions = []
         fixed = []
@@ -1941,8 +1964,14 @@ class RegressionTrackerTool(BaseTool):
         total_failed = 0
 
         for tr in test_results:
-            tc_id = tr.get("test_case_id") or tr.get("id", "")
-            current_status = tr.get("status", "unknown")
+            if isinstance(tr, str):
+                tr_dict = {"id": tr, "name": tr, "status": "passed", "error": ""}
+            elif isinstance(tr, dict):
+                tr_dict = tr
+            else:
+                continue
+            tc_id = tr_dict.get("test_case_id") or tr_dict.get("id", "")
+            current_status = tr_dict.get("status", "unknown")
             baseline_status = baseline_map.get(tc_id)
 
             if current_status == "passed":
@@ -1955,10 +1984,10 @@ class RegressionTrackerTool(BaseTool):
             elif baseline_status == "passed" and current_status == "failed":
                 regressions.append({
                     "test_case_id": tc_id,
-                    "name": tr.get("name", ""),
+                    "name": tr_dict.get("name", ""),
                     "previous_status": "passed",
                     "current_status": "failed",
-                    "error": tr.get("error", ""),
+                    "error": tr_dict.get("error", ""),
                 })
             elif baseline_status == "failed" and current_status == "passed":
                 fixed.append(tc_id)
